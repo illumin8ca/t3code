@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import { APP_DISPLAY_NAME } from "../../branding";
 
 /**
- * Full-screen card used by the pairing and CLI-connect auth surfaces so the
- * standalone auth pages share one visual treatment.
+ * Full-screen card for standalone auth pages, mirroring the pairing surface's
+ * treatment. Used by the CLI-connect authorize and callback surfaces.
  */
 export function AuthSurfaceShell({ children }: { readonly children: ReactNode }) {
   return (

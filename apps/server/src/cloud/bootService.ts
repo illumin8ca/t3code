@@ -87,6 +87,11 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
   return [
     "[Unit]",
     "Description=T3 Code server (T3 Connect)",
+    // Give up after 5 crashes in 5 minutes so a persistently broken install
+    // (deleted runtime, broken workspace) stops instead of restarting every
+    // 5s forever and growing the unrotated append log without bound.
+    "StartLimitIntervalSec=300",
+    "StartLimitBurst=5",
     "",
     "[Service]",
     "Type=simple",
@@ -334,10 +339,27 @@ export const make = Effect.fnUntraced(function* (input: {
       // username argument: loginctl defaults to the calling user, which is
       // always right, while $USER can be stale (su without -l) or unset.
       yield* runStep("enabling lingering for this user", "loginctl", ["enable-linger"]);
-    }).pipe(Effect.tapError(() => fs.remove(unitPath).pipe(Effect.ignore)));
+    }).pipe(Effect.tapError(() => rollbackFailedInstall));
 
     return plan;
   }).pipe(Effect.withSpan("cloud.boot_service.install"));
+
+  // If activation fails partway (e.g. enable succeeds but restart/linger
+  // fails), leave nothing behind: disable removes the enable symlink, remove
+  // deletes the file, daemon-reload clears the stale definition — otherwise a
+  // dangling wants/ symlink logs "Failed to load unit" at every boot and the
+  // next connect misreports the state.
+  const rollbackFailedInstall = Effect.gen(function* () {
+    yield* runStep("cleaning up the service", "systemctl", [
+      "--user",
+      "disable",
+      BOOT_SERVICE_UNIT_FILE,
+    ]).pipe(Effect.ignore);
+    yield* fs.remove(unitPath).pipe(Effect.ignore);
+    yield* runStep("reloading systemd user units", "systemctl", ["--user", "daemon-reload"]).pipe(
+      Effect.ignore,
+    );
+  });
 
   const uninstall: BootService["Service"]["uninstall"] = Effect.gen(function* () {
     yield* requireSystemdLinux;
@@ -371,9 +393,12 @@ export const make = Effect.fnUntraced(function* (input: {
     if (unit === null) {
       return { supported: true, installed: false, current: false, unitPath, logPath };
     }
-    // A unit written by an older CLI (different pinned runtime, different
-    // node) counts as installed but stale, so connect offers a repair.
-    const current = unit === renderBootServiceUnit(plan);
+    // A unit is current only if it matches what install would write now (an
+    // older CLI wrote a different runtime/node path) AND the entry point it
+    // references still exists (a pinned runtime under ~/.t3 can be deleted to
+    // reclaim space). Either mismatch makes connect offer a repair.
+    const entryExists = yield* fs.exists(plannedEntryPath).pipe(Effect.orElseSucceed(() => false));
+    const current = unit === renderBootServiceUnit(plan) && entryExists;
     return { supported: true, installed: true, current, unitPath, logPath };
   }).pipe(Effect.withSpan("cloud.boot_service.status"));
 

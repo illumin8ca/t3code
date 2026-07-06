@@ -53,9 +53,36 @@ const encodePersistedToken = Schema.encodeEffect(PersistedTokenJson);
 const OAuthTokenResponse = Schema.Struct({
   access_token: Schema.String,
   refresh_token: Schema.optional(Schema.String),
+  id_token: Schema.optional(Schema.String),
   expires_in: Schema.Number,
   token_type: Schema.String,
 });
+
+/**
+ * Best-effort read of the `email` (or fallback) claim from an OIDC id_token.
+ * Only used to show the operator which account they linked, so a malformed
+ * token degrades to "no identity" rather than an error.
+ */
+function idTokenIdentity(idToken: string | undefined): string | null {
+  if (!idToken) return null;
+  const payload = idToken.split(".")[1];
+  if (!payload) return null;
+  const decoded = Encoding.decodeBase64UrlString(payload);
+  if (decoded._tag !== "Success") return null;
+  try {
+    const claims = JSON.parse(decoded.success) as {
+      readonly email?: unknown;
+      readonly preferred_username?: unknown;
+      readonly sub?: unknown;
+    };
+    for (const value of [claims.email, claims.preferred_username, claims.sub]) {
+      if (typeof value === "string" && value.length > 0) return value;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export class CloudCliCredentialRemovalError extends Schema.TaggedErrorClass<CloudCliCredentialRemovalError>()(
   "CloudCliCredentialRemovalError",
@@ -147,10 +174,13 @@ const exchangeToken = Effect.fn("cloud.cli_token.exchange")(function* (
   );
   const now = yield* Clock.currentTimeMillis;
   return {
-    accessToken: response.access_token,
-    refreshToken: response.refresh_token ?? params.refresh_token ?? "",
-    expiresAtEpochMs: now + response.expires_in * 1_000,
-  } satisfies PersistedToken;
+    token: {
+      accessToken: response.access_token,
+      refreshToken: response.refresh_token ?? params.refresh_token ?? "",
+      expiresAtEpochMs: now + response.expires_in * 1_000,
+    } satisfies PersistedToken,
+    identity: idTokenIdentity(response.id_token),
+  };
 });
 
 const makePkceRequest = Effect.gen(function* () {
@@ -241,11 +271,12 @@ export const make = Effect.gen(function* () {
 
   const refresh = Effect.fn("cloud.cli_token.refresh")(function* (token: PersistedToken) {
     const metadata = yield* cloudCliOAuthConfig;
-    return yield* exchangeToken(metadata, {
+    const { token: refreshed } = yield* exchangeToken(metadata, {
       grant_type: "refresh_token",
       refresh_token: token.refreshToken,
       client_id: metadata.clientId,
     });
+    return refreshed;
   });
 
   const login = Effect.fn("cloud.cli_token.login")(function* () {
@@ -307,13 +338,14 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
-    return yield* exchangeToken(metadata, {
+    const { token } = yield* exchangeToken(metadata, {
       grant_type: "authorization_code",
       code,
       redirect_uri: metadata.redirectUri,
       client_id: metadata.clientId,
       code_verifier: verifier,
     });
+    return token;
   });
 
   const getExistingNoLock = Effect.fn("cloud.cli_token.get_existing_no_lock")(function* () {
@@ -340,7 +372,13 @@ export const make = Effect.gen(function* () {
   );
   const get = semaphore.withPermits(1)(
     Effect.gen(function* () {
-      const token = yield* getExistingNoLock();
+      // A stored credential that can't be read or refreshed (corrupt, revoked,
+      // expired grant) must fall through to a fresh login rather than dead-end
+      // the command — this is the loopback counterpart of authorizeCli's
+      // paste-side fallback.
+      const token = yield* getExistingNoLock().pipe(
+        Effect.orElseSucceed(() => Option.none<PersistedToken>()),
+      );
       return Option.isSome(token)
         ? token.value
         : yield* Effect.scoped(login()).pipe(Effect.flatMap(persist));

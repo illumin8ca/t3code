@@ -23,6 +23,14 @@ interface RecordedTokenRequest {
   readonly params: URLSearchParams;
 }
 
+// A JWT whose payload claims { email: "theo@example.test" } (signature is not
+// verified — the CLI only reads the claim to display the connected account).
+const idTokenWithEmail = (() => {
+  const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ email: "theo@example.test" })).toString("base64url");
+  return `${header}.${payload}.`;
+})();
+
 const makeTokenEndpointLayer = (requests: Array<RecordedTokenRequest>) =>
   Layer.succeed(
     HttpClient.HttpClient,
@@ -38,6 +46,7 @@ const makeTokenEndpointLayer = (requests: Array<RecordedTokenRequest>) =>
             JSON.stringify({
               access_token: "access-token-1",
               refresh_token: "refresh-token-1",
+              id_token: idTokenWithEmail,
               expires_in: 3600,
               token_type: "bearer",
             }),
@@ -65,7 +74,7 @@ it.layer(NodeServices.layer)("CliTokenManager.pasteCodeLogin", (it) => {
       const requests: Array<RecordedTokenRequest> = [];
       let seenAuthorizeUrl = "";
 
-      const token = yield* CliTokenManager.pasteCodeLogin(
+      const { token, identity } = yield* CliTokenManager.pasteCodeLogin(
         ({ authorizeUrl, validate }: PasteCodePromptInput) =>
           Effect.gen(function* () {
             seenAuthorizeUrl = authorizeUrl;
@@ -85,6 +94,8 @@ it.layer(NodeServices.layer)("CliTokenManager.pasteCodeLogin", (it) => {
 
       assert.equal(token.accessToken, "access-token-1");
       assert.equal(token.refreshToken, "refresh-token-1");
+      // The id_token's email claim is surfaced so connect can show the account.
+      assert.equal(identity, "theo@example.test");
 
       assert.lengthOf(requests, 1);
       const exchange = requests[0]!;

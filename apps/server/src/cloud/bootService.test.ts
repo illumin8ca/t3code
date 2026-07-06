@@ -61,10 +61,15 @@ const provideHostRefs = (home: string, platform: NodeJS.Platform = "linux") =>
 
 const makeTestDirs = () => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-boot-service-test-"));
+  // A real file for the stable-entry cases so status can confirm the entry
+  // point exists.
+  const stableEntry = NodePath.join(root, "bin.mjs");
+  NodeFS.writeFileSync(stableEntry, "#!/usr/bin/env node\n");
   return {
     home: root,
     baseDir: NodePath.join(root, ".t3"),
     logsDir: NodePath.join(root, ".t3", "userdata", "logs"),
+    stableEntry,
   };
 };
 
@@ -82,6 +87,8 @@ it("renders a systemd unit with absolute paths and append-mode logging", () => {
     [
       "[Unit]",
       "Description=T3 Code server (T3 Connect)",
+      "StartLimitIntervalSec=300",
+      "StartLimitBurst=5",
       "",
       "[Service]",
       "Type=simple",
@@ -152,13 +159,13 @@ it.layer(NodeServices.layer)("BootService", (it) => {
         baseDir: dirs.baseDir,
         logsDir: dirs.logsDir,
         cliVersion: "0.0.27",
-        host: makeHost("/usr/local/lib/node_modules/t3/dist/bin.mjs"),
+        host: makeHost(dirs.stableEntry),
       }).pipe(Effect.provide(makeRecordingRunnerLayer(commands)), provideHostRefs(dirs.home));
 
       const plan = yield* service.install;
 
       // A stable entry point is reused directly — no npm install.
-      assert.equal(plan.t3EntryPath, "/usr/local/lib/node_modules/t3/dist/bin.mjs");
+      assert.equal(plan.t3EntryPath, dirs.stableEntry);
       assert.deepEqual(
         commands.map((entry) => [entry.command, ...entry.args].join(" ")),
         [
@@ -173,10 +180,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
 
       const unitPath = NodePath.join(dirs.home, ".config", "systemd", "user", "t3code.service");
       const unit = NodeFS.readFileSync(unitPath, "utf8");
-      assert.include(
-        unit,
-        "ExecStart=/usr/local/bin/node /usr/local/lib/node_modules/t3/dist/bin.mjs serve",
-      );
+      assert.include(unit, `ExecStart=/usr/local/bin/node ${dirs.stableEntry} serve`);
       assert.include(unit, `Environment=T3CODE_HOME=${dirs.baseDir}`);
 
       const status = yield* service.status;
@@ -252,7 +256,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
         baseDir: dirs.baseDir,
         logsDir: dirs.logsDir,
         cliVersion: "0.0.27",
-        host: makeHost("/usr/local/lib/node_modules/t3/dist/bin.mjs"),
+        host: makeHost(dirs.stableEntry),
       }).pipe(Effect.provide(makeRecordingRunnerLayer(commands)), provideHostRefs(dirs.home));
 
       const unitDir = NodePath.join(dirs.home, ".config", "systemd", "user");
@@ -264,6 +268,29 @@ it.layer(NodeServices.layer)("BootService", (it) => {
 
       const status = yield* service.status;
       assert.isTrue(status.supported);
+      assert.isTrue(status.installed);
+      assert.isFalse(status.current);
+    }),
+  );
+
+  it.effect("reports a current unit as stale when its entry point is gone", () =>
+    Effect.gen(function* () {
+      const dirs = makeTestDirs();
+      const commands: Array<RecordedCommand> = [];
+      const service = yield* BootService.make({
+        baseDir: dirs.baseDir,
+        logsDir: dirs.logsDir,
+        cliVersion: "0.0.27",
+        host: makeHost(dirs.stableEntry),
+      }).pipe(Effect.provide(makeRecordingRunnerLayer(commands)), provideHostRefs(dirs.home));
+
+      yield* service.install;
+      assert.isTrue((yield* service.status).current);
+
+      // The pinned runtime (or global bin) was deleted to reclaim space; the
+      // unit still matches byte-for-byte but would crashloop at boot.
+      NodeFS.rmSync(dirs.stableEntry);
+      const status = yield* service.status;
       assert.isTrue(status.installed);
       assert.isFalse(status.current);
     }),

@@ -113,14 +113,16 @@ export function ConnectCliCallbackSurface() {
     );
   }
 
-  // A response for a request this browser did not start is the CSRF shape the
-  // state parameter exists to stop; refuse to display a code for it.
-  if (expectedState !== null && expectedState !== result.state) {
+  // Fail closed: the legitimate callback always lands in the same browser
+  // that visited /connect (which recorded the state), so a missing or
+  // mismatched state means this page was reached some other way — the CSRF
+  // shape the state parameter exists to stop. Refuse to display a code.
+  if (expectedState === null || expectedState !== result.state) {
     return (
       <AuthSurfaceShell>
         <ConnectCliAuthMessage
           title="This code belongs to a different request"
-          description="The authorization response does not match the connect request this browser started. Re-run `t3 connect` in your terminal and open the freshly printed URL."
+          description="This authorization response does not match a connect request started in this browser. Re-run `t3 connect` in your terminal and open the freshly printed URL in this browser."
         />
       </AuthSurfaceShell>
     );

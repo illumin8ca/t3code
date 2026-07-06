@@ -7,6 +7,7 @@ import {
 import { RelayOkResponse } from "@t3tools/contracts/relay";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import * as Terminal from "effect/Terminal";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
@@ -72,6 +73,7 @@ const promptForPastedCode = ({ authorizeUrl, validate }: CliTokenManager.PasteCo
     ),
   );
 
+/** Returns the connected account identity, if the flow could determine one. */
 const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   readonly paste: boolean;
 }) {
@@ -79,7 +81,7 @@ const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   const paste = options.paste || (yield* detectHeadlessSession);
   if (!paste) {
     yield* tokens.get;
-    return;
+    return null;
   }
   // A stored credential whose refresh fails (revoked, expired grant) must
   // fall through to a fresh paste login, not dead-end the command.
@@ -91,16 +93,19 @@ const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
     ),
   );
   if (Option.isSome(existing)) {
-    return;
+    return null;
   }
-  const token = yield* CliTokenManager.pasteCodeLogin(promptForPastedCode).pipe(
+  const { token, identity } = yield* CliTokenManager.pasteCodeLogin(promptForPastedCode).pipe(
     Effect.mapError((cause) =>
-      isCloudCliTokenManagerError(cause)
+      // Ctrl-C / EOF at the prompt is a QuitError; let it propagate so the CLI
+      // cancels quietly instead of dumping an authorization error.
+      Terminal.isQuitError(cause) || isCloudCliTokenManagerError(cause)
         ? cause
         : new CliTokenManager.CloudCliAuthorizationError({ cause }),
     ),
   );
   yield* tokens.store(token);
+  return identity;
 });
 
 function bytesToString(value: Uint8Array): string {
@@ -433,6 +438,8 @@ const runCloudCommand = <A, E>(
     return yield* run.pipe(Effect.provide(runtimeLayer));
   });
 
+const connectedAs = (identity: string | null): string => (identity ? ` as ${identity}` : "");
+
 const linkEnvironmentForConnect = Effect.fn("cloud.cli.link_environment")(function* (options: {
   readonly paste: boolean;
 }) {
@@ -444,15 +451,15 @@ const linkEnvironmentForConnect = Effect.fn("cloud.cli.link_environment")(functi
   );
   if (Option.isNone(installed)) {
     yield* Console.log("T3 Connect setup cancelled. The relay client was not installed.");
-    return false;
+    return null;
   }
   yield* Console.log(
     `Using relay client ${installed.value.version} from ${installed.value.executablePath}.`,
   );
 
-  yield* authorizeCli(options);
+  const identity = yield* authorizeCli(options);
   yield* CliState.setCliDesiredCloudLink(true);
-  return true;
+  return { identity } as const;
 });
 
 const connectLoginCommand = Command.make("login", {
@@ -464,8 +471,8 @@ const connectLoginCommand = Command.make("login", {
     runCloudCommand(
       flags,
       Effect.gen(function* () {
-        yield* authorizeCli(flags);
-        yield* Console.log("Signed in to T3 Connect.");
+        const identity = yield* authorizeCli(flags);
+        yield* Console.log(`Signed in to T3 Connect${connectedAs(identity)}.`);
       }),
     ),
   ),
@@ -480,9 +487,11 @@ const connectLinkCommand = Command.make("link", {
     runCloudCommand(
       flags,
       Effect.gen(function* () {
-        if (yield* linkEnvironmentForConnect(flags)) {
+        const linked = yield* linkEnvironmentForConnect(flags);
+        if (linked) {
           yield* Console.log(
-            "This T3 environment will be available through T3 Connect the next time T3 starts.",
+            `Authorized T3 Connect${connectedAs(linked.identity)}. This environment will be ` +
+              "available the next time T3 starts.",
           );
         }
       }),
@@ -585,10 +594,14 @@ export const connectCommand = Command.make("connect", {
     runCloudCommand(
       flags,
       Effect.gen(function* () {
-        if (!(yield* linkEnvironmentForConnect(flags))) {
+        const linked = yield* linkEnvironmentForConnect(flags);
+        if (!linked) {
           return;
         }
-        yield* Console.log("\nConnected!");
+        // Show which account was linked so an unexpected identity (a pasted
+        // code that authorized a different account) is visible before the
+        // machine is brought online.
+        yield* Console.log(`\nConnected${connectedAs(linked.identity)}!`);
 
         // Connect itself already succeeded; a boot-service failure must not
         // fail the command, just tell the user what happened and move on.
