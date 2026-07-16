@@ -1,7 +1,11 @@
 import type { SharePayload } from "expo-sharing";
 
 import { SerializedAsyncQueue } from "../../lib/serialized-async-queue";
-import { hasIncomingShareContent, type IncomingShareDraft } from "./incoming-share-model";
+import {
+  hasIncomingShareContent,
+  type IncomingShareDestination,
+  type IncomingShareDraft,
+} from "./incoming-share-model";
 
 export interface IncomingShareInboxDependencies {
   readonly loadDrafts: () => Promise<ReadonlyArray<IncomingShareDraft>>;
@@ -126,6 +130,34 @@ export class IncomingShareInbox {
       // users may intentionally share identical content more than once.
       await this.dependencies.removeDraft(shareId);
       return sortAndDedupeIncomingShares(await this.dependencies.loadDrafts());
+    });
+  }
+
+  reserve(
+    shareId: string,
+    destination: IncomingShareDestination,
+  ): Promise<ReadonlyArray<IncomingShareDraft>> {
+    return this.runExclusive(async () => {
+      const persisted = await this.dependencies.loadDrafts();
+      const target = persisted.find((draft) => draft.id === shareId);
+      if (!target) {
+        throw new Error("The shared content is no longer available.");
+      }
+      if (target.destination) {
+        if (
+          target.destination.environmentId !== destination.environmentId ||
+          target.destination.projectId !== destination.projectId
+        ) {
+          throw new Error("The shared content is already reserved for another project draft.");
+        }
+        return sortAndDedupeIncomingShares(persisted);
+      }
+
+      const reserved = { ...target, destination };
+      await this.dependencies.writeDraft(reserved);
+      return sortAndDedupeIncomingShares(
+        persisted.map((draft) => (draft.id === shareId ? reserved : draft)),
+      );
     });
   }
 }

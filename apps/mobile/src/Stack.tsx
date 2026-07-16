@@ -54,6 +54,10 @@ import {
 } from "./features/settings/components/SettingsLegalDocumentRouteScreen";
 import { useAppShortcuts } from "./features/shortcuts/useAppShortcuts";
 import { useIncomingShare } from "./features/sharing/IncomingShareProvider";
+import {
+  EMPTY_INCOMING_SHARE_PRESENTATION_STATE,
+  transitionIncomingSharePresentation,
+} from "./features/sharing/incoming-share-presentation";
 import { nativeHeaderScrollEdgeEffects } from "./native/StackHeader";
 import { useThreadOutboxDrain } from "./state/use-thread-outbox-drain";
 
@@ -279,7 +283,7 @@ function RootStackLayout(props: {
 }) {
   const navigation = useNavigation();
   const { pendingShare } = useIncomingShare();
-  const presentedShareIdRef = useRef<string | null>(null);
+  const sharePresentationRef = useRef(EMPTY_INCOMING_SHARE_PRESENTATION_STATE);
   useAgentNotificationNavigation();
   useThreadOutboxDrain();
   // Presents the T3 Connect onboarding sheet after an in-session sign-in.
@@ -288,34 +292,17 @@ function RootStackLayout(props: {
   useAppShortcuts(props.state);
   useEffect(() => {
     const topRouteName = props.state.routes[props.state.index]?.name;
-    if (topRouteName === "NewTaskSheet") {
+    const transition = transitionIncomingSharePresentation(sharePresentationRef.current, {
+      isShareSheetPresented: topRouteName === "NewTaskSheet",
+      pendingShareId: pendingShare?.id ?? null,
+    });
+    sharePresentationRef.current = transition.state;
+    if (!transition.shareIdToPresent) {
       return;
     }
-
-    if (presentedShareIdRef.current !== null) {
-      const previouslyPresentedShareId = presentedShareIdRef.current;
-      presentedShareIdRef.current = null;
-      // A dismissal leaves the share queued, but must not instantly trap the
-      // user in a reopened sheet. A later navigation/lifecycle update can
-      // present it again. If the old share was consumed and another is queued,
-      // continue below and present that distinct share immediately.
-      if (pendingShare?.id === previouslyPresentedShareId) {
-        return;
-      }
-    }
-
-    if (!pendingShare) {
-      // Allow a later, intentional share of identical text/URL content to
-      // present again after the previous inbox item was fully consumed.
-      return;
-    }
-    if (presentedShareIdRef.current === pendingShare.id) {
-      return;
-    }
-    presentedShareIdRef.current = pendingShare.id;
     navigation.navigate("NewTaskSheet", {
       screen: "NewTask",
-      params: { incomingShareId: pendingShare.id },
+      params: { incomingShareId: transition.shareIdToPresent },
     });
   }, [navigation, pendingShare, props.state]);
   // Full pathname (sheets included) for keyboard-command scoping; the

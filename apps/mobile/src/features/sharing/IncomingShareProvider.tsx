@@ -10,7 +10,11 @@ import {
 import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Alert, AppState, Platform } from "react-native";
 
-import { buildIncomingShareDraft, type IncomingShareDraft } from "./incoming-share-model";
+import {
+  buildIncomingShareDraft,
+  type IncomingShareDestination,
+  type IncomingShareDraft,
+} from "./incoming-share-model";
 import { IncomingShareInbox } from "./incoming-share-inbox";
 import {
   loadIncomingShareDrafts,
@@ -23,6 +27,7 @@ type IncomingShareContextValue = {
   readonly isLoading: boolean;
   readonly error: Error | null;
   readonly getShare: (shareId: string) => IncomingShareDraft | null;
+  readonly reserveShare: (shareId: string, destination: IncomingShareDestination) => Promise<void>;
   readonly consumeShare: (shareId: string) => Promise<void>;
   readonly refresh: () => Promise<void>;
 };
@@ -241,6 +246,15 @@ export function IncomingShareProvider(props: React.PropsWithChildren) {
       setDrafts(snapshot);
     }
   }, []);
+  const reserveShare = useCallback(
+    async (shareId: string, destination: IncomingShareDestination) => {
+      const snapshot = await incomingShareInbox.reserve(shareId, destination);
+      if (mountedRef.current) {
+        setDrafts(snapshot);
+      }
+    },
+    [],
+  );
   const getShare = useCallback(
     (shareId: string) => drafts.find((draft) => draft.id === shareId) ?? null,
     [drafts],
@@ -252,10 +266,11 @@ export function IncomingShareProvider(props: React.PropsWithChildren) {
       isLoading,
       error,
       getShare,
+      reserveShare,
       consumeShare,
       refresh,
     }),
-    [consumeShare, drafts, error, getShare, isLoading, refresh],
+    [consumeShare, drafts, error, getShare, isLoading, refresh, reserveShare],
   );
 
   return (

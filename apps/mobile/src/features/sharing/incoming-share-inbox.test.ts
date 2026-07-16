@@ -151,4 +151,34 @@ describe("IncomingShareInbox", () => {
     expect(clearPayloads).not.toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
   });
+
+  it("durably reserves a share for one project before draft import", async () => {
+    const { inbox, persisted } = createHarness();
+    persisted.set("share-stable", draft("share-stable"));
+    const destination = { environmentId: "environment-1", projectId: "project-1" };
+
+    await expect(inbox.reserve("share-stable", destination)).resolves.toEqual([
+      { ...draft("share-stable"), destination },
+    ]);
+    expect(persisted.get("share-stable")?.destination).toEqual(destination);
+    await expect(inbox.reserve("share-stable", destination)).resolves.toEqual([
+      { ...draft("share-stable"), destination },
+    ]);
+  });
+
+  it("rejects moving a reserved share to another project", async () => {
+    const { inbox, persisted } = createHarness();
+    persisted.set("share-stable", {
+      ...draft("share-stable"),
+      destination: { environmentId: "environment-1", projectId: "project-1" },
+    });
+
+    await expect(
+      inbox.reserve("share-stable", {
+        environmentId: "environment-1",
+        projectId: "project-2",
+      }),
+    ).rejects.toThrow("already reserved");
+    expect(persisted.get("share-stable")?.destination?.projectId).toBe("project-1");
+  });
 });

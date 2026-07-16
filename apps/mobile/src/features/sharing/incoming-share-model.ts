@@ -13,15 +13,27 @@ export interface IncomingShareDraft {
   readonly schemaVersion: 1;
   readonly id: string;
   readonly createdAt: string;
+  readonly destination?: IncomingShareDestination;
   readonly text: string;
   readonly attachments: ReadonlyArray<DraftComposerImageAttachment>;
   readonly warnings: ReadonlyArray<string>;
 }
 
+export interface IncomingShareDestination {
+  readonly environmentId: string;
+  readonly projectId: string;
+}
+
+const IncomingShareDestinationSchema = Schema.Struct({
+  environmentId: Schema.String,
+  projectId: Schema.String,
+});
+
 export const IncomingShareDraftSchema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   id: Schema.String,
   createdAt: Schema.String,
+  destination: Schema.optional(IncomingShareDestinationSchema),
   text: Schema.String,
   attachments: Schema.Array(DraftComposerImageAttachmentSchema),
   warnings: Schema.Array(Schema.String),

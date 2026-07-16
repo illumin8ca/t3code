@@ -1,8 +1,8 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -82,6 +82,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const threads = useThreadShells();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
+  const isFocused = useIsFocused();
   const { layout } = useAdaptiveWorkspaceLayout();
   const insets = useSafeAreaInsets();
   const chevronColor = useThemeColor("--color-chevron");
@@ -119,6 +120,39 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     return nextItems;
   }, [repositoryGroups]);
   const projectEmptyState = deriveProjectEmptyState(catalogState);
+  const resumedDestinationKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const destination = incomingShare?.destination;
+    if (!destination) {
+      resumedDestinationKeyRef.current = null;
+      return;
+    }
+    if (!isFocused) {
+      return;
+    }
+    const destinationKey = `${incomingShare.id}:${destination.environmentId}:${destination.projectId}`;
+    if (resumedDestinationKeyRef.current === destinationKey) {
+      return;
+    }
+    const destinationProject = projects.find(
+      (project) =>
+        project.environmentId === destination.environmentId && project.id === destination.projectId,
+    );
+    if (!destinationProject) {
+      return;
+    }
+    resumedDestinationKeyRef.current = destinationKey;
+    navigation.navigate("NewTaskSheet", {
+      screen: "NewTaskDraft",
+      params: {
+        environmentId: destinationProject.environmentId,
+        projectId: destinationProject.id,
+        title: destinationProject.title,
+        incomingShareId: incomingShare.id,
+      },
+    });
+  }, [incomingShare, isFocused, navigation, projects]);
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
@@ -216,6 +250,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               return (
                 <Pressable
                   key={item.key}
+                  disabled={incomingShare?.destination !== undefined}
                   onPress={() =>
                     navigation.navigate("NewTaskSheet", {
                       screen: "NewTaskDraft",
