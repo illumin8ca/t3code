@@ -115,11 +115,22 @@ export function NewTaskDraftScreen(props: {
   const isImportingShare = importingShareKey !== null;
   const alertedUnavailableIncomingShareIdRef = useRef<string | null>(null);
   const incomingShare = props.incomingShareId ? getShare(props.incomingShareId) : null;
+  const requestedInitialProjectAvailable = Boolean(
+    props.initialProjectRef?.environmentId &&
+    props.initialProjectRef.projectId &&
+    projects.some(
+      (project) =>
+        project.environmentId === props.initialProjectRef?.environmentId &&
+        project.id === props.initialProjectRef?.projectId,
+    ),
+  );
+  const isProjectPickerReturnActive =
+    isReturningToProjectPicker && !requestedInitialProjectAvailable;
   const isIncomingShareTransferPending = Boolean(
     incomingShare && cancelledIncomingShareId !== props.incomingShareId,
   );
   usePreventRemove(
-    (isIncomingShareTransferPending && !isReturningToProjectPicker) || isCancellingShareImport,
+    (isIncomingShareTransferPending && !isProjectPickerReturnActive) || isCancellingShareImport,
     () => undefined,
   );
   const hasImportedIncomingShare = Boolean(
@@ -147,6 +158,10 @@ export function NewTaskDraftScreen(props: {
     if (!isReturningToProjectPicker) {
       return;
     }
+    if (requestedInitialProjectAvailable) {
+      setIsReturningToProjectPicker(false);
+      return;
+    }
     // Let usePreventRemove commit its disabled state before replacing this
     // route, otherwise the transfer guard can swallow the fallback action.
     const frame = requestAnimationFrame(() => {
@@ -155,7 +170,12 @@ export function NewTaskDraftScreen(props: {
       );
     });
     return () => cancelAnimationFrame(frame);
-  }, [isReturningToProjectPicker, navigation, props.incomingShareId]);
+  }, [
+    isReturningToProjectPicker,
+    navigation,
+    props.incomingShareId,
+    requestedInitialProjectAvailable,
+  ]);
   useEffect(() => {
     if (!shareImportMountedRef.current) {
       startedShareImportKeyRef.current = null;
