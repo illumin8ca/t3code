@@ -101,6 +101,7 @@ export function NewTaskDraftScreen(props: {
   const [importingShareKey, setImportingShareKey] = useState<string | null>(null);
   const [isCancellingShareImport, setIsCancellingShareImport] = useState(false);
   const [cancelledIncomingShareId, setCancelledIncomingShareId] = useState<string | null>(null);
+  const [isReturningToProjectPicker, setIsReturningToProjectPicker] = useState(false);
   const [shareImportAttempt, setShareImportAttempt] = useState(0);
   const startedShareImportKeyRef = useRef<string | null>(null);
   const cancellingShareImportKeyRef = useRef<string | null>(null);
@@ -117,7 +118,10 @@ export function NewTaskDraftScreen(props: {
   const isIncomingShareTransferPending = Boolean(
     incomingShare && cancelledIncomingShareId !== props.incomingShareId,
   );
-  usePreventRemove(isIncomingShareTransferPending || isCancellingShareImport, () => undefined);
+  usePreventRemove(
+    (isIncomingShareTransferPending && !isReturningToProjectPicker) || isCancellingShareImport,
+    () => undefined,
+  );
   const hasImportedIncomingShare = Boolean(
     props.incomingShareId &&
     flow.draftKey &&
@@ -139,6 +143,19 @@ export function NewTaskDraftScreen(props: {
       navigation.goBack();
     }
   }, [cancelledIncomingShareId, navigation, props.incomingShareId]);
+  useEffect(() => {
+    if (!isReturningToProjectPicker) {
+      return;
+    }
+    // Let usePreventRemove commit its disabled state before replacing this
+    // route, otherwise the transfer guard can swallow the fallback action.
+    const frame = requestAnimationFrame(() => {
+      navigation.dispatch(
+        StackActions.replace("NewTask", { incomingShareId: props.incomingShareId }),
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isReturningToProjectPicker, navigation, props.incomingShareId]);
   useEffect(() => {
     if (!shareImportMountedRef.current) {
       startedShareImportKeyRef.current = null;
@@ -231,9 +248,7 @@ export function NewTaskDraftScreen(props: {
         // Never fall through to the flow provider's temporary first-project
         // default. Return to the picker with the share id intact so the user
         // can choose an available destination.
-        navigation.dispatch(
-          StackActions.replace("NewTask", { incomingShareId: props.incomingShareId }),
-        );
+        setIsReturningToProjectPicker(true);
       }
       return;
     }
