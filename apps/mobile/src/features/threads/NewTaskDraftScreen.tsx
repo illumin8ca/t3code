@@ -103,6 +103,7 @@ export function NewTaskDraftScreen(props: {
   const [cancelledIncomingShareId, setCancelledIncomingShareId] = useState<string | null>(null);
   const [shareImportAttempt, setShareImportAttempt] = useState(0);
   const startedShareImportKeyRef = useRef<string | null>(null);
+  const cancellingShareImportKeyRef = useRef<string | null>(null);
   const shareImportDraftBackupRef = useRef(new Map<string, ComposerDraft>());
   const activeShareImportTokenRef = useRef<symbol | null>(null);
   const shareImportMountedRef = useRef(true);
@@ -147,6 +148,7 @@ export function NewTaskDraftScreen(props: {
       appliedInitialProjectKeyRef.current = null;
       shareImportMountedRef.current = false;
       activeShareImportTokenRef.current = null;
+      cancellingShareImportKeyRef.current = null;
     };
   }, []);
 
@@ -291,7 +293,10 @@ export function NewTaskDraftScreen(props: {
       return;
     }
     const importKey = `${shareId}:${draftKey}`;
-    if (startedShareImportKeyRef.current === importKey) {
+    if (
+      startedShareImportKeyRef.current === importKey ||
+      cancellingShareImportKeyRef.current === importKey
+    ) {
       return;
     }
 
@@ -375,6 +380,10 @@ export function NewTaskDraftScreen(props: {
                   if (!shareImportMountedRef.current) {
                     return;
                   }
+                  // Latch synchronously before restoring the draft. The
+                  // restore publishes atom state and can re-run the import
+                  // effect before React commits the cancelling state update.
+                  cancellingShareImportKeyRef.current = importKey;
                   setIsCancellingShareImport(true);
                   try {
                     const currentDraft = getComposerDraftSnapshot(draftKey);
@@ -394,7 +403,6 @@ export function NewTaskDraftScreen(props: {
                     if (!shareImportMountedRef.current) {
                       return;
                     }
-                    setIsCancellingShareImport(false);
                     Alert.alert(
                       "Could not cancel import",
                       cancelError instanceof Error
@@ -403,7 +411,11 @@ export function NewTaskDraftScreen(props: {
                       [
                         {
                           text: "Retry import",
-                          onPress: () => setShareImportAttempt((attempt) => attempt + 1),
+                          onPress: () => {
+                            cancellingShareImportKeyRef.current = null;
+                            setIsCancellingShareImport(false);
+                            setShareImportAttempt((attempt) => attempt + 1);
+                          },
                         },
                         {
                           text: "Retry cancel",
