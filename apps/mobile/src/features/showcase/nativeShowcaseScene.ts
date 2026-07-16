@@ -1,10 +1,12 @@
 import { requireOptionalNativeModule } from "expo";
-import { Platform } from "react-native";
 
-import { SHOWCASE_SCENES, type ShowcaseScene } from "./showcaseData";
+export const SHOWCASE_SCENES = ["threads", "thread", "terminal", "review"] as const;
+export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
 
 interface NativeShowcaseControls {
+  readonly getShowcasePairingUrl?: () => string | null;
   readonly getShowcaseScene?: () => string | null;
+  readonly prepareShowcaseCapture?: () => void;
   readonly markShowcaseReady?: (scene: ShowcaseScene) => void;
 }
 
@@ -12,20 +14,32 @@ function nativeShowcaseControls(): NativeShowcaseControls | null {
   return requireOptionalNativeModule<NativeShowcaseControls>("T3NativeControls");
 }
 
-export function getNativeShowcaseScene(): ShowcaseScene {
-  if (Platform.OS !== "ios") return "thread";
-
+export function getNativeShowcasePairingUrl(): string | null {
   try {
-    const value = nativeShowcaseControls()?.getShowcaseScene?.();
-    return SHOWCASE_SCENES.find((scene) => scene === value) ?? "thread";
+    return nativeShowcaseControls()?.getShowcasePairingUrl?.()?.trim() || null;
   } catch {
-    return "thread";
+    return null;
+  }
+}
+
+export function getNativeShowcaseScene(): ShowcaseScene | null {
+  try {
+    const scene = nativeShowcaseControls()?.getShowcaseScene?.()?.trim();
+    return SHOWCASE_SCENES.find((candidate) => candidate === scene) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function prepareNativeShowcaseCapture(): void {
+  try {
+    nativeShowcaseControls()?.prepareShowcaseCapture?.();
+  } catch {
+    // The harness still works when a development build predates this helper.
   }
 }
 
 export function markNativeShowcaseReady(scene: ShowcaseScene): void {
-  if (Platform.OS !== "ios") return;
-
   try {
     nativeShowcaseControls()?.markShowcaseReady?.(scene);
   } catch {

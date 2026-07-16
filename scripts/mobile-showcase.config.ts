@@ -1,5 +1,7 @@
-export const SHOWCASE_SCENES = ["threads", "thread", "terminal", "review"] as const;
-export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
+import { SHOWCASE_SCENES, type ShowcaseScene } from "./mobile-showcase-environment.ts";
+
+export { SHOWCASE_SCENES };
+export type { ShowcaseScene };
 
 export interface ShowcaseIosDevice {
   readonly id: string;

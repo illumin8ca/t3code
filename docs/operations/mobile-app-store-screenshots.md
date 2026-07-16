@@ -1,96 +1,93 @@
 # Mobile app-store screenshot harness
 
-The mobile showcase is a deterministic, offline set of app-store scenes. It uses the real thread,
-composer, terminal, diff, project-list, typography, theme, and responsive layout components, but it
-does not require a running T3 server or a real coding session. The route is only compiled into the
-Metro bundle when `EXPO_PUBLIC_SHOWCASE=1`; normal development and release bundles do not expose it.
+The screenshot harness runs the real mobile application against a disposable local T3 environment.
+It creates an ephemeral T3 base directory, a real Git project with deterministic changes, seeded
+orchestration projections, and persisted terminal history. The app pairs with that server through
+its normal connection flow and React Navigation opens the production Home, Thread,
+ThreadTerminal, and ThreadReview routes.
+
+No screenshot-specific screen recreates application UI. EXPO_PUBLIC_SHOWCASE=1 only enables the
+non-rendering pairing/readiness coordinator and disables terminal autofocus so captures do not
+contain the software keyboard.
 
 ## Capture the default matrix
 
 From the repository root:
 
-```bash
-pnpm screenshots:mobile
-```
+    pnpm screenshots:mobile
 
-The command starts a showcase-enabled Metro server, builds the debug apps once per selected
-platform, boots each configured simulator/emulator, normalizes dark mode and status bars, opens each
-scene, and writes PNGs to `artifacts/app-store/screenshots/`. Devices started by the runner and Metro
-are stopped afterward.
+The command:
 
-Captures wait for an explicit rendered-scene marker rather than a fixed bundle-loading delay. On
-Android the runner retries the scene deep link until React Navigation is ready; on iOS the showcase
-route records readiness in the simulator app container. This prevents launcher and bundling screens
-from being captured on cold starts.
+1. Creates a temporary T3 base directory and starts a local server on an available port.
+2. Creates a Lumen Notes Git repository with a feature branch and uncommitted review diff.
+3. Seeds the server's migrated SQLite database with projects, threads, messages, activities, and
+   terminal history.
+4. Starts an isolated Metro server, builds the selected native apps, and boots each device.
+5. Pairs each clean app installation with the temporary environment.
+6. Navigates to the real application route for every requested scene.
+7. Normalizes appearance and status bars and writes exact-size PNGs to
+   artifacts/app-store/screenshots/.
+
+The server, Metro, temporary base directory, and devices started by the runner are cleaned up after
+capture. Pass --keep-running to retain them for inspection; the runner prints the base-directory
+path and server port.
+
+Captures wait for the real environment snapshot to hydrate and for the requested route to become
+active. Both platforms record readiness in the simulator/emulator app container. A final settle
+delay allows native terminal and Git review data to finish rendering.
 
 A full capture regenerates the selected native project with Expo's clean development prebuild before
-building it. This keeps CocoaPods, Swift packages, Gradle settings, and the installed JavaScript
-dependencies in sync. Use `--skip-build` for repeated captures after that first build.
+building it. Use --skip-build for repeated captures after the first build.
 
-The harness uses its own Metro port (`8199` by default), so an ordinary mobile server or another
-worktree on port 8081 cannot accidentally provide the bundle being photographed.
-
-On iOS the runner passes Metro and scene selection as simulator launch arguments. This avoids the
-custom-URL confirmation sheet introduced by newer simulator runtimes and needs no UI automation or
-Accessibility permission. It discovers the Mac's LAN IPv4 address, prewarms the platform bundle,
-and disables development-menu overlays before each capture.
+The harness uses its own Metro port (8199 by default), so an ordinary mobile server or another
+worktree cannot accidentally provide the bundle being photographed.
 
 The default matrix is:
 
-- `iphone-6.9`: iPhone 17 Pro Max
-- `ipad-13`: iPad Pro 13-inch (M5)
-- `pixel`: Pixel 10 Pro Android AVD
+- iphone-6.9: iPhone 17 Pro Max
+- ipad-13: iPad Pro 13-inch (M5)
+- pixel: Pixel 10 Pro Android AVD
 
-Edit [`scripts/mobile-showcase.config.ts`](../../scripts/mobile-showcase.config.ts) to change simulator or
-AVD names, light/dark appearance, scenes, output directory, capture delay, Android ABI, or viewport.
-The names are exact on purpose: the harness fails clearly instead of silently capturing a different
-screen class after an SDK update.
+Edit [mobile-showcase.config.ts](../../scripts/mobile-showcase.config.ts) to change simulator or AVD
+names, light/dark appearance, scenes, output directory, capture delay, Android ABI, or viewport.
 
 ## Fast iteration
 
 Capture one scene or device:
 
-```bash
-pnpm screenshots:mobile --device iphone-6.9 --scene thread
-pnpm screenshots:mobile --platform android --scene review
-```
+    pnpm screenshots:mobile --device iphone-6.9 --scene thread
+    pnpm screenshots:mobile --platform android --scene review
 
-Reuse already built/booted apps and leave everything open for visual iteration:
+Reuse the native build and retain the disposable environment:
 
-```bash
-pnpm screenshots:mobile --device ipad-13 --skip-build --keep-running
-```
+    pnpm screenshots:mobile --device ipad-13 --skip-build --keep-running
 
-Run Metro separately when editing the fixture or scene design:
+Run Metro separately:
 
-```bash
-pnpm --filter @t3tools/mobile showcase
-pnpm screenshots:mobile --skip-build --skip-metro --device iphone-6.9
-```
+    pnpm --filter @t3tools/mobile showcase
+    pnpm screenshots:mobile --skip-build --skip-metro --device iphone-6.9
 
-List the configured matrix and all flags:
+List the matrix and flags:
 
-```bash
-pnpm screenshots:mobile --list
-```
+    pnpm screenshots:mobile --list
 
-## Customize the showcase content
+## Customize the seeded environment
 
-- Fixture project, threads, conversation, terminal output, and patch:
-  [`showcaseData.ts`](../../apps/mobile/src/features/showcase/showcaseData.ts)
-- Responsive scene composition:
-  [`ShowcaseRouteScreen.tsx`](../../apps/mobile/src/features/showcase/ShowcaseRouteScreen.tsx)
-- Device/capture matrix: [`mobile-showcase.config.ts`](../../scripts/mobile-showcase.config.ts)
+- Project repository, thread projections, conversation, terminal transcript, and Git changes:
+  [mobile-showcase-environment.ts](../../scripts/mobile-showcase-environment.ts)
+- Device and capture matrix:
+  [mobile-showcase.config.ts](../../scripts/mobile-showcase.config.ts)
+- Simulator/emulator orchestration:
+  [mobile-showcase.ts](../../scripts/mobile-showcase.ts)
 
-The fixture clock is fixed, so timestamps and relative-time labels remain identical across devices
-and capture runs. The same data constants feed iPhone, iPad, and Android. Tablet captures
-intentionally add the project and thread sidebar around the same thread, terminal, or review content
-used on phones.
+Fixture timestamps are generated relative to capture startup so every route shows stable relative
+labels while the server still receives valid current data. The same ephemeral environment serves
+iPhone, iPad, and Android; responsive differences come entirely from the production app layout.
 
 ## Local prerequisites
 
-- iOS: Xcode command-line tools, the configured iOS simulator runtimes, and installed CocoaPods.
-- Android: `ANDROID_HOME` (or the default macOS SDK path), `adb`, `emulator`, and the configured AVD.
+- iOS: Xcode command-line tools, the configured simulator runtimes, and installed CocoaPods.
+- Android: ANDROID_HOME (or the default macOS SDK path), adb, emulator, and the configured AVD.
 
-For store submission, keep the generated PNGs unscaled. Pick simulator device classes and Android
-viewport dimensions in the config that match the exact upload slots you intend to fill.
+For store submission, keep generated PNGs unscaled. Configure device classes and Android viewport
+dimensions that match the exact upload slots.

@@ -71,8 +71,10 @@ import { resolveReviewAvailability } from "./reviewAvailability";
 import { resolveSelectedReviewFileId } from "./reviewPaneSelection";
 import { buildReviewSectionMenu } from "./review-section-menu";
 import type { ReviewSectionItem } from "./reviewModel";
+import { markNativeShowcaseReady } from "../showcase/nativeShowcaseScene";
 
 const REVIEW_HEADER_SPACING = 0;
+const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
 
 const ReviewNotice = memo(function ReviewNotice(props: { readonly notice: string }) {
   return (
@@ -392,6 +394,11 @@ export function ReviewSheet(props: ReviewSheetProps) {
       selectedSection,
       draftMessage,
     });
+  const showcaseReviewReady = SHOWCASE_ENABLED && parsedDiff.kind === "files";
+  useEffect(() => {
+    if (!showcaseReviewReady) return;
+    markNativeShowcaseReady("review");
+  }, [showcaseReviewReady]);
   const NativeReviewDiffView = resolveNativeReviewDiffView()!;
   const nativeReviewDiffViewRef = useRef<NativeReviewDiffViewHandle>(null);
   // Native pull-to-refresh on the diff surface (replaces the old Refresh menu item).
@@ -612,6 +619,13 @@ export function ReviewSheet(props: ReviewSheetProps) {
 
   return (
     <>
+      {showcaseReviewReady ? (
+        <View
+          pointerEvents="none"
+          testID="showcase-ready-review"
+          style={{ position: "absolute", width: 1, height: 1, opacity: 0.01 }}
+        />
+      ) : null}
       <NativeStackScreenOptions
         options={
           isAndroid

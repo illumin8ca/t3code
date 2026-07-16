@@ -17,12 +17,18 @@ import showcaseConfig, {
   SHOWCASE_SCENES,
   type ShowcaseScene,
 } from "./mobile-showcase.config.ts";
+import {
+  SHOWCASE_TERMINAL_ID,
+  SHOWCASE_THREAD_ID,
+  seedShowcaseEnvironment,
+} from "./mobile-showcase-environment.ts";
 
 const REPO_ROOT = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const MOBILE_ROOT = NodePath.join(REPO_ROOT, "apps/mobile");
 const ANDROID_PACKAGE = "com.t3tools.t3code.dev";
 const APP_SCHEME = "t3code-dev";
-const IOS_READY_KEY = "T3ShowcaseReadyScene";
+const IOS_READY_FILENAME = "T3ShowcaseReadyScene";
+const SERVER_HOST = "0.0.0.0";
 const IOS_SIMULATOR_ARCH = NodeProcess.arch === "arm64" ? "arm64" : "x86_64";
 const IOS_APP_PATH = NodePath.join(
   MOBILE_ROOT,
@@ -254,15 +260,19 @@ async function runCommand(
   });
 }
 
-async function commandOutput(command: string, args: ReadonlyArray<string>): Promise<string> {
+async function commandOutput(
+  command: string,
+  args: ReadonlyArray<string>,
+  options: NodeChildProcess.ExecFileOptions = {},
+): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     NodeChildProcess.execFile(
       command,
       [...args],
-      { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, ...options },
       (error, stdout) => {
         if (error) reject(error);
-        else resolve(stdout);
+        else resolve(String(stdout));
       },
     );
   });
@@ -272,7 +282,7 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForPort(port: number, timeoutMs = 60_000): Promise<void> {
+async function waitForPort(port: number, label = "Process", timeoutMs = 60_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const open = await new Promise<boolean>((resolve) => {
@@ -290,13 +300,115 @@ async function waitForPort(port: number, timeoutMs = 60_000): Promise<void> {
     if (open) return;
     await delay(500);
   }
-  throw new Error(`Metro did not begin listening on port ${port} within ${timeoutMs}ms.`);
+  throw new Error(`${label} did not begin listening on port ${port} within ${timeoutMs}ms.`);
+}
+
+async function reserveAvailablePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = NodeNet.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Could not reserve a local port for the showcase environment."));
+        return;
+      }
+      server.close((error) => (error ? reject(error) : resolve(address.port)));
+    });
+  });
+}
+
+async function createShowcaseShell(baseDir: string): Promise<string> {
+  const shellPath = NodePath.join(baseDir, "showcase-shell");
+  await NodeFSP.writeFile(
+    shellPath,
+    `#!/bin/sh
+if [ "$1" = "-ilc" ] || [ "$1" = "-lic" ]; then
+  exec /bin/sh -c "$2"
+fi
+exec /bin/cat
+`,
+    { mode: 0o755 },
+  );
+  return shellPath;
+}
+
+function startShowcaseServer(
+  baseDir: string,
+  workspaceRoot: string,
+  port: number,
+  shellPath: string,
+): NodeChildProcess.ChildProcess {
+  return spawnProcess(
+    "node",
+    [
+      "apps/server/src/bin.ts",
+      "serve",
+      "--host",
+      SERVER_HOST,
+      "--port",
+      String(port),
+      "--base-dir",
+      baseDir,
+      "--no-browser",
+      "--log-level",
+      "error",
+      workspaceRoot,
+    ],
+    {
+      env: {
+        ...NodeProcess.env,
+        SHELL: shellPath,
+      },
+    },
+  );
+}
+
+export function parsePairingCredentialOutput(output: string): string {
+  const jsonStart = output.indexOf("{");
+  const jsonEnd = output.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd < jsonStart) {
+    throw new Error("Pairing credential command did not return JSON.");
+  }
+  const parsed = JSON.parse(output.slice(jsonStart, jsonEnd + 1)) as {
+    readonly credential?: unknown;
+  };
+  if (typeof parsed.credential !== "string" || parsed.credential.length === 0) {
+    throw new Error("Pairing credential command returned no credential.");
+  }
+  return parsed.credential;
+}
+
+async function issuePairingCredential(baseDir: string): Promise<string> {
+  const output = await commandOutput(
+    "node",
+    ["apps/server/src/bin.ts", "auth", "pairing", "create", "--base-dir", baseDir, "--json"],
+    { env: { ...NodeProcess.env, NO_COLOR: "1" } },
+  );
+  return parsePairingCredentialOutput(output);
+}
+
+function buildShowcasePairingUrl(host: string, port: number, credential: string): string {
+  const url = new URL(`http://${host}:${port}/`);
+  url.hash = new URLSearchParams([["token", credential]]).toString();
+  return url.toString();
+}
+
+export function showcaseSceneUrl(scene: ShowcaseScene, environmentId: string): string {
+  if (scene === "threads") return `${APP_SCHEME}://`;
+  const threadPath = `threads/${encodeURIComponent(environmentId)}/${SHOWCASE_THREAD_ID}`;
+  if (scene === "thread") return `${APP_SCHEME}://${threadPath}`;
+  if (scene === "terminal") {
+    return `${APP_SCHEME}://${threadPath}/terminal?terminalId=${SHOWCASE_TERMINAL_ID}`;
+  }
+  return `${APP_SCHEME}://${threadPath}/review`;
 }
 
 function startMetro(config: ShowcaseConfig): NodeChildProcess.ChildProcess {
   return spawnProcess(
     "pnpm",
-    ["exec", "expo", "start", "--dev-client", "--port", String(config.metroPort), "--clear"],
+    ["exec", "expo", "start", "--dev-client", "--port", String(config.metroPort)],
     {
       cwd: MOBILE_ROOT,
       env: {
@@ -338,7 +450,6 @@ async function buildIos(): Promise<string> {
       "-quiet",
       `ARCHS=${IOS_SIMULATOR_ARCH}`,
       "ONLY_ACTIVE_ARCH=YES",
-      "CODE_SIGNING_ALLOWED=NO",
       "build",
     ],
     { cwd: MOBILE_ROOT },
@@ -417,11 +528,10 @@ async function normalizeIosSimulator(device: ShowcaseIosDevice, udid: string): P
   ]);
 }
 
-async function iosPreferencesPath(udid: string): Promise<string> {
-  const appContainer = (
+async function iosAppContainer(udid: string): Promise<string> {
+  return (
     await commandOutput("xcrun", ["simctl", "get_app_container", udid, ANDROID_PACKAGE, "data"])
   ).trim();
-  return NodePath.join(appContainer, "Library/Preferences", `${ANDROID_PACKAGE}.plist`);
 }
 
 async function waitForIosShowcaseScene(
@@ -429,17 +539,14 @@ async function waitForIosShowcaseScene(
   scene: ShowcaseScene,
   timeoutMs = 90_000,
 ): Promise<void> {
-  const preferencesPath = await iosPreferencesPath(udid);
+  const readyPath = NodePath.join(
+    await iosAppContainer(udid),
+    "Library/Caches",
+    IOS_READY_FILENAME,
+  );
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const readyScene = await commandOutput("plutil", [
-      "-extract",
-      IOS_READY_KEY,
-      "raw",
-      "-o",
-      "-",
-      preferencesPath,
-    ]).catch(() => "");
+    const readyScene = await NodeFSP.readFile(readyPath, "utf8").catch(() => "");
     if (readyScene.trim() === scene) return;
     await delay(500);
   }
@@ -452,15 +559,22 @@ async function captureIos(
   outputDirectory: string,
   config: ShowcaseConfig,
   metroHost: string,
+  pairingUrl: string,
 ): Promise<boolean> {
   const simulator = await findIosSimulator(capture.device.simulator);
   const startedByRunner = simulator.state !== "Booted";
-  if (startedByRunner) {
-    await runCommand("xcrun", ["simctl", "boot", simulator.udid]);
+  if (!startedByRunner) {
+    // Clear transient SpringBoard state (permission prompts, stale URL-open
+    // confirmations, keyboards) without erasing the developer's simulator.
+    await runCommand("xcrun", ["simctl", "shutdown", simulator.udid]);
   }
+  await runCommand("xcrun", ["simctl", "boot", simulator.udid]);
   await runCommand("xcrun", ["simctl", "bootstatus", simulator.udid, "-b"]);
   await normalizeIosSimulator(capture.device, simulator.udid);
   if (appPath) {
+    await runCommand("xcrun", ["simctl", "uninstall", simulator.udid, ANDROID_PACKAGE]).catch(
+      () => undefined,
+    );
     await runCommand("xcrun", ["simctl", "install", simulator.udid, appPath]);
   }
 
@@ -483,25 +597,55 @@ async function captureIos(
   }
 
   const metroUrl = `http://${metroHost}:${config.metroPort}?disableOnboarding=1`;
-
-  for (const scene of capture.scenes) {
-    await runCommand("xcrun", ["simctl", "terminate", simulator.udid, ANDROID_PACKAGE]).catch(
-      () => undefined,
-    );
-    const preferencesPath = await iosPreferencesPath(simulator.udid);
-    await runCommand("plutil", ["-remove", IOS_READY_KEY, preferencesPath]).catch(() => undefined);
+  const scenePath = NodePath.join(
+    await iosAppContainer(simulator.udid),
+    "Library/Caches/T3ShowcaseScene",
+  );
+  const readyPath = NodePath.join(
+    await iosAppContainer(simulator.udid),
+    "Library/Caches",
+    IOS_READY_FILENAME,
+  );
+  const firstScene = capture.scenes[0] ?? "threads";
+  const launchShowcaseApp = async (terminateRunningProcess: boolean) => {
     await runCommand("xcrun", [
       "simctl",
       "launch",
+      ...(terminateRunningProcess ? ["--terminate-running-process"] : []),
       simulator.udid,
       ANDROID_PACKAGE,
       "--initialUrl",
       metroUrl,
+      "--showcasePairingUrl",
+      pairingUrl,
       "--showcaseScene",
-      scene,
+      firstScene,
     ]);
-    await waitForIosShowcaseScene(simulator.udid, scene);
-    await delay(config.settleDelayMs);
+  };
+  await NodeFSP.rm(readyPath, { force: true });
+  await NodeFSP.writeFile(scenePath, firstScene);
+  await launchShowcaseApp(false);
+  for (const [sceneIndex, scene] of capture.scenes.entries()) {
+    if (sceneIndex > 0) await NodeFSP.rm(readyPath, { force: true });
+    await NodeFSP.writeFile(scenePath, scene);
+    if (sceneIndex === 0) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const isLastAttempt = attempt === 1;
+        try {
+          // A freshly installed Expo development build can spend well over 30s
+          // applying an already-bundled update after it reaches 100%. Killing it
+          // at that point sends the next capture back to the dev launcher.
+          await waitForIosShowcaseScene(simulator.udid, scene, 120_000);
+          break;
+        } catch (error) {
+          if (isLastAttempt) throw error;
+          await launchShowcaseApp(true);
+        }
+      }
+    } else {
+      await waitForIosShowcaseScene(simulator.udid, scene);
+    }
+    await delay(scene === "review" ? Math.max(config.settleDelayMs, 8_000) : config.settleDelayMs);
     const destination = NodePath.join(outputDirectory, `${capture.device.id}-${scene}.png`);
     await runCommand("xcrun", ["simctl", "io", simulator.udid, "screenshot", destination]);
     await reportCapture(destination);
@@ -629,30 +773,43 @@ async function waitForAndroidShowcaseScene(
   scene: ShowcaseScene,
   timeoutMs = 90_000,
 ): Promise<void> {
-  const marker = `showcase-ready-${scene}`;
-  const hierarchyPath = "/sdcard/t3-showcase-window.xml";
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    await adbOutput(serial, [
+    const readyScene = await adbOutput(serial, [
       "shell",
-      "am",
-      "start",
-      "-W",
-      "-a",
-      "android.intent.action.VIEW",
-      "-d",
-      `${APP_SCHEME}://showcase/${scene}`,
+      "run-as",
       ANDROID_PACKAGE,
+      "cat",
+      "files/t3-showcase-ready",
     ]).catch(() => "");
-    await delay(750);
-    await adbOutput(serial, ["shell", "rm", "-f", hierarchyPath]).catch(() => "");
-    const hierarchy = await adbOutput(serial, ["shell", "uiautomator", "dump", hierarchyPath])
-      .then(() => adbOutput(serial, ["shell", "cat", hierarchyPath]))
-      .catch(() => "");
-    if (hierarchy.includes(marker)) return;
+    if (readyScene.trim() === scene) return;
     await delay(500);
   }
   throw new Error(`Android showcase scene '${scene}' did not render within ${timeoutMs}ms.`);
+}
+
+async function writeAndroidShowcaseScene(serial: string, scene: ShowcaseScene): Promise<void> {
+  await runAdb(serial, [
+    "shell",
+    `run-as ${ANDROID_PACKAGE} sh -c 'mkdir -p files && rm -f files/t3-showcase-ready && printf %s ${scene} > files/t3-showcase-scene'`,
+  ]);
+}
+
+async function prepareAndroidShowcaseApp(serial: string): Promise<void> {
+  const preferences = `<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<map>
+  <boolean name="isOnboardingFinished" value="true" />
+  <boolean name="showsAtLaunch" value="false" />
+  <boolean name="showFab" value="false" />
+  <boolean name="motionGestureEnabled" value="false" />
+  <boolean name="touchGestureEnabled" value="false" />
+  <boolean name="keyCommandsEnabled" value="false" />
+</map>`;
+  const encodedPreferences = Buffer.from(preferences).toString("base64");
+  await runAdb(serial, [
+    "shell",
+    `run-as ${ANDROID_PACKAGE} sh -c 'mkdir -p shared_prefs && printf %s ${encodedPreferences} | base64 -d > shared_prefs/expo.modules.devmenu.sharedpreferences.xml'`,
+  ]);
 }
 
 async function captureAndroid(
@@ -660,6 +817,7 @@ async function captureAndroid(
   apkPath: string | null,
   outputDirectory: string,
   config: ShowcaseConfig,
+  pairingUrl: string,
 ): Promise<{ readonly startedByRunner: boolean; readonly serial: string }> {
   const running = await runningAndroidAvds();
   const existingSerial = running.get(capture.device.avd);
@@ -684,9 +842,12 @@ async function captureAndroid(
   if (apkPath) {
     await runAdb(serial, ["install", "-r", apkPath]);
   }
+  await runAdb(serial, ["shell", "pm", "clear", ANDROID_PACKAGE]);
+  await prepareAndroidShowcaseApp(serial);
   await runAdb(serial, ["reverse", `tcp:${config.metroPort}`, `tcp:${config.metroPort}`]);
-  await runAdb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
   const metroUrl = encodeURIComponent(`http://127.0.0.1:${config.metroPort}?disableOnboarding=1`);
+  const firstScene = capture.scenes[0] ?? "threads";
+  await writeAndroidShowcaseScene(serial, firstScene);
   await runAdb(serial, [
     "shell",
     "am",
@@ -696,11 +857,18 @@ async function captureAndroid(
     "android.intent.action.VIEW",
     "-d",
     `${APP_SCHEME}://expo-development-client/?url=${metroUrl}`,
+    "--es",
+    "showcasePairingUrl",
+    pairingUrl,
+    "--es",
+    "showcaseScene",
+    firstScene,
     ANDROID_PACKAGE,
   ]);
   for (const scene of capture.scenes) {
+    await writeAndroidShowcaseScene(serial, scene);
     await waitForAndroidShowcaseScene(serial, scene);
-    await delay(Math.max(config.settleDelayMs, 5_000));
+    await delay(Math.max(config.settleDelayMs, scene === "review" ? 8_000 : 5_000));
     const destination = NodePath.join(outputDirectory, `${capture.device.id}-${scene}.png`);
     const png = await new Promise<Buffer>((resolve, reject) => {
       NodeChildProcess.execFile(
@@ -753,6 +921,14 @@ async function main(): Promise<void> {
   const outputDirectory = NodePath.resolve(REPO_ROOT, showcaseConfig.outputDirectory);
   await NodeFSP.mkdir(outputDirectory, { recursive: true });
 
+  const showcaseBaseDir = await NodeFSP.mkdtemp(
+    NodePath.join(NodeOS.tmpdir(), "t3-mobile-showcase-"),
+  );
+  const serverPort = await reserveAvailablePort();
+  const showcaseShell = await createShowcaseShell(showcaseBaseDir);
+  const showcaseWorkspaceRoot = NodePath.join(showcaseBaseDir, "workspace", "lumen-notes");
+  await NodeFSP.mkdir(showcaseWorkspaceRoot, { recursive: true });
+  let showcaseServer: NodeChildProcess.ChildProcess | null = null;
   let metro: NodeChildProcess.ChildProcess | null = null;
   const startedIosUdids: string[] = [];
   const androidCleanups: Array<{
@@ -762,9 +938,24 @@ async function main(): Promise<void> {
   }> = [];
 
   try {
+    showcaseServer = startShowcaseServer(
+      showcaseBaseDir,
+      showcaseWorkspaceRoot,
+      serverPort,
+      showcaseShell,
+    );
+    await waitForPort(serverPort, "Showcase server");
+    await seedShowcaseEnvironment({ baseDir: showcaseBaseDir });
+    const environmentId = (
+      await NodeFSP.readFile(NodePath.join(showcaseBaseDir, "userdata", "environment-id"), "utf8")
+    ).trim();
+    if (!environmentId) {
+      throw new Error("Showcase server did not persist an environment id.");
+    }
+
     if (!options.skipMetro) {
       metro = startMetro(showcaseConfig);
-      await waitForPort(showcaseConfig.metroPort);
+      await waitForPort(showcaseConfig.metroPort, "Metro");
       await Promise.all([
         hasIos ? warmMetroBundle("ios", metroHost, showcaseConfig) : Promise.resolve(),
         hasAndroid ? warmMetroBundle("android", "127.0.0.1", showcaseConfig) : Promise.resolve(),
@@ -786,6 +977,9 @@ async function main(): Promise<void> {
       : null;
 
     for (const capture of captures) {
+      const credential = await issuePairingCredential(showcaseBaseDir);
+      const pairingHost = capture.device.platform === "ios" ? "127.0.0.1" : "10.0.2.2";
+      const pairingUrl = buildShowcasePairingUrl(pairingHost, serverPort, credential);
       if (capture.device.platform === "ios") {
         const simulator = await findIosSimulator(capture.device.simulator);
         const started = await captureIos(
@@ -794,6 +988,7 @@ async function main(): Promise<void> {
           outputDirectory,
           showcaseConfig,
           metroHost,
+          pairingUrl,
         );
         if (started) startedIosUdids.push(simulator.udid);
       } else {
@@ -802,6 +997,7 @@ async function main(): Promise<void> {
           androidApkPath,
           outputDirectory,
           showcaseConfig,
+          pairingUrl,
         );
         androidCleanups.push({ device: capture.device, ...result });
       }
@@ -812,6 +1008,10 @@ async function main(): Promise<void> {
     );
     if (options.keepRunning) {
       metro?.unref();
+      showcaseServer?.unref();
+      NodeProcess.stdout.write(
+        `Showcase environment kept at ${showcaseBaseDir} (server port ${serverPort}).\n`,
+      );
     }
   } finally {
     if (!options.keepRunning) {
@@ -825,6 +1025,8 @@ async function main(): Promise<void> {
         await runCommand("xcrun", ["simctl", "shutdown", udid]).catch(() => undefined);
       }
       metro?.kill("SIGTERM");
+      showcaseServer?.kill("SIGTERM");
+      await NodeFSP.rm(showcaseBaseDir, { recursive: true, force: true });
     }
   }
 }

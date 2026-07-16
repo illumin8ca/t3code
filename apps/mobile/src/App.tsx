@@ -11,6 +11,7 @@ import { createStaticNavigation, DarkTheme, DefaultTheme } from "@react-navigati
 import { RegistryContext } from "@effect/atom-react";
 import { ConfirmDialogHost } from "./components/ConfirmDialogHost";
 import { CloudAuthProvider } from "./features/cloud/CloudAuthProvider";
+import { prepareNativeShowcaseCapture } from "./features/showcase/nativeShowcaseScene";
 import { AppearancePreferencesProvider } from "./features/settings/appearance/AppearancePreferencesProvider";
 import { RootStack } from "./Stack";
 import { appAtomRegistry } from "./state/atom-registry";
@@ -20,7 +21,9 @@ import { useThemeColor } from "./lib/useThemeColor";
 
 import "../global.css";
 
-const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
+if (process.env.EXPO_PUBLIC_SHOWCASE === "1") {
+  prepareNativeShowcaseCapture();
+}
 
 const appLinking = {
   prefixes: [Linking.createURL("/"), "t3code://", "t3code-dev://", "t3code-preview://"],
@@ -41,41 +44,39 @@ export default function App() {
     SplashScreen.hide();
   }, []);
 
-  const content = (
-    <AppearancePreferencesProvider>
-      <GestureHandlerRootView className="flex-1">
-        <KeyboardProvider statusBarTranslucent>
-          <SafeAreaProvider>
-            <StatusBar
-              barStyle={colorScheme === "dark" ? "light-content" : "dark-content"}
-              backgroundColor={statusBarBg}
-              translucent
-            />
-            {/* The navigation theme drives the NATIVE header appearance: native-stack
+  return (
+    <RegistryContext.Provider value={appAtomRegistry}>
+      <CloudAuthProvider>
+        <AppearancePreferencesProvider>
+          <GestureHandlerRootView className="flex-1">
+            <KeyboardProvider statusBarTranslucent>
+              <SafeAreaProvider>
+                <StatusBar
+                  barStyle={colorScheme === "dark" ? "light-content" : "dark-content"}
+                  backgroundColor={statusBarBg}
+                  translucent
+                />
+                {/* The navigation theme drives the NATIVE header appearance: native-stack
                     forwards `dark` as the nav bar's overrideUserInterfaceStyle. Without
                     this, React Navigation defaults to its light theme and every native
                     header (glass buttons, title, materials) is forced light even when
                     the system is in dark mode. */}
-            {/* Blur target for Android dropdown backdrops — see appBlurTarget.ts. */}
-            <BlurTargetView ref={appBlurTargetRef} style={{ flex: 1 }}>
-              <Navigation
-                linking={appLinking}
-                theme={colorScheme === "dark" ? DarkTheme : DefaultTheme}
-              />
-              <ConfirmDialogHost />
-            </BlurTargetView>
-            {/* Anchored-menu overlays render here — in-window, so the
+                {/* Blur target for Android dropdown backdrops — see appBlurTarget.ts. */}
+                <BlurTargetView ref={appBlurTargetRef} style={{ flex: 1 }}>
+                  <Navigation
+                    linking={appLinking}
+                    theme={colorScheme === "dark" ? DarkTheme : DefaultTheme}
+                  />
+                  <ConfirmDialogHost />
+                </BlurTargetView>
+                {/* Anchored-menu overlays render here — in-window, so the
                     keyboard stays up while a dropdown is open. */}
-            <OverlayPortalHost />
-          </SafeAreaProvider>
-        </KeyboardProvider>
-      </GestureHandlerRootView>
-    </AppearancePreferencesProvider>
-  );
-
-  return (
-    <RegistryContext.Provider value={appAtomRegistry}>
-      {SHOWCASE_ENABLED ? content : <CloudAuthProvider>{content}</CloudAuthProvider>}
+                <OverlayPortalHost />
+              </SafeAreaProvider>
+            </KeyboardProvider>
+          </GestureHandlerRootView>
+        </AppearancePreferencesProvider>
+      </CloudAuthProvider>
     </RegistryContext.Provider>
   );
 }

@@ -3,9 +3,11 @@ import { assert, it } from "@effect/vitest";
 import type { ShowcaseConfig } from "./mobile-showcase.config.ts";
 import {
   parseShowcaseCliArgs,
+  parsePairingCredentialOutput,
   planShowcaseCaptures,
   readPngDimensions,
   selectLanIpv4Address,
+  showcaseSceneUrl,
 } from "./mobile-showcase.ts";
 
 const config: ShowcaseConfig = {
@@ -78,5 +80,28 @@ it("selects a reachable LAN IPv4 address", () => {
       { address: "192.168.1.80", family: "IPv4", internal: false },
     ]),
     "192.168.1.80",
+  );
+});
+
+it("maps capture scenes to the real application routes", () => {
+  assert.equal(showcaseSceneUrl("threads", "environment-1"), "t3code-dev://");
+  assert.equal(
+    showcaseSceneUrl("thread", "environment-1"),
+    "t3code-dev://threads/environment-1/polish-command-palette",
+  );
+  assert.equal(
+    showcaseSceneUrl("terminal", "environment-1"),
+    "t3code-dev://threads/environment-1/polish-command-palette/terminal?terminalId=term-1",
+  );
+  assert.equal(
+    showcaseSceneUrl("review", "environment-1"),
+    "t3code-dev://threads/environment-1/polish-command-palette/review",
+  );
+});
+
+it("reads multiline JSON from the pairing CLI", () => {
+  assert.equal(
+    parsePairingCredentialOutput('server log\n{\n  "credential": "PAIR-ME"\n}\n'),
+    "PAIR-ME",
   );
 });
