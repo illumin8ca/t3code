@@ -319,6 +319,7 @@ export function NewTaskDraftScreen(props: {
       shareImportDraftBackupRef.current.get(importKey) ?? getComposerDraftSnapshot(draftKey);
     shareImportDraftBackupRef.current.set(importKey, draftBackup);
     const importToken = Symbol(importKey);
+    let didReserveShare = false;
     activeShareImportTokenRef.current = importToken;
     setImportingShareKey(importKey);
     void (async () => {
@@ -326,6 +327,7 @@ export function NewTaskDraftScreen(props: {
         environmentId: String(destinationProject.environmentId),
         projectId: String(destinationProject.id),
       });
+      didReserveShare = true;
       if (
         !shareImportMountedRef.current ||
         activeShareImportTokenRef.current !== importToken ||
@@ -390,10 +392,12 @@ export function NewTaskDraftScreen(props: {
                     if (currentDraft.importedShareIds?.includes(shareId)) {
                       await restoreComposerDraftSnapshot(draftKey, draftBackup);
                     }
-                    await releaseShareReservation(shareId, {
-                      environmentId: String(destinationProject.environmentId),
-                      projectId: String(destinationProject.id),
-                    });
+                    if (didReserveShare) {
+                      await releaseShareReservation(shareId, {
+                        environmentId: String(destinationProject.environmentId),
+                        projectId: String(destinationProject.id),
+                      });
+                    }
                     shareImportDraftBackupRef.current.delete(importKey);
                     if (shareImportMountedRef.current) {
                       setIsCancellingShareImport(false);
