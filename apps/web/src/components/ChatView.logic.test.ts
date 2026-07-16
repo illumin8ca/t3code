@@ -1,4 +1,11 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { Thread } from "../types";
@@ -9,6 +16,8 @@ import {
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  getCustomClaudeEndpointBaseUrl,
+  getCustomClaudeEndpointModelDisabledReason,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
@@ -452,5 +461,89 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
+  });
+});
+
+describe("custom Claude endpoint model gating (ILL-27)", () => {
+  const claudeDriver = ProviderDriverKind.make("claudeAgent");
+  const codexDriver = ProviderDriverKind.make("codex");
+  const customEndpointInstance = {
+    driver: claudeDriver,
+    config: { baseUrl: "http://127.0.0.1:8317", customModels: ["gpt-5.6-sol"] },
+  };
+  const builtInInstance = { driver: claudeDriver, config: {} };
+  const models = [
+    { slug: "claude-fable-5", isCustom: false },
+    { slug: "claude-opus-4-8", isCustom: false },
+    { slug: "gpt-5.6-sol", isCustom: true },
+  ];
+
+  it("reads the base URL only from claudeAgent instances with a non-empty value", () => {
+    expect(getCustomClaudeEndpointBaseUrl(customEndpointInstance)).toBe("http://127.0.0.1:8317");
+    expect(getCustomClaudeEndpointBaseUrl(builtInInstance)).toBeNull();
+    expect(
+      getCustomClaudeEndpointBaseUrl({ driver: claudeDriver, config: { baseUrl: "   " } }),
+    ).toBeNull();
+    expect(
+      getCustomClaudeEndpointBaseUrl({ driver: claudeDriver, config: { baseUrl: 42 } }),
+    ).toBeNull();
+    expect(
+      getCustomClaudeEndpointBaseUrl({
+        driver: codexDriver,
+        config: { baseUrl: "http://127.0.0.1:8317" },
+      }),
+    ).toBeNull();
+    expect(getCustomClaudeEndpointBaseUrl(undefined)).toBeNull();
+  });
+
+  it("disables every built-in Claude slug on a custom-endpoint instance", () => {
+    for (const slug of ["claude-fable-5", "claude-opus-4-8"]) {
+      expect(
+        getCustomClaudeEndpointModelDisabledReason({
+          instanceConfig: customEndpointInstance,
+          models,
+          model: slug,
+        }),
+      ).toBe("Built-in Claude models are unavailable on a custom endpoint.");
+    }
+  });
+
+  it("keeps custom models selectable on a custom-endpoint instance", () => {
+    expect(
+      getCustomClaudeEndpointModelDisabledReason({
+        instanceConfig: customEndpointInstance,
+        models,
+        model: "gpt-5.6-sol",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for the same slugs on a built-in Claude instance", () => {
+    for (const slug of ["claude-fable-5", "claude-opus-4-8", "gpt-5.6-sol"]) {
+      expect(
+        getCustomClaudeEndpointModelDisabledReason({
+          instanceConfig: builtInInstance,
+          models,
+          model: slug,
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it("returns null for unknown slugs and undefined instance configs", () => {
+    expect(
+      getCustomClaudeEndpointModelDisabledReason({
+        instanceConfig: customEndpointInstance,
+        models,
+        model: "not-in-the-list",
+      }),
+    ).toBeNull();
+    expect(
+      getCustomClaudeEndpointModelDisabledReason({
+        instanceConfig: undefined,
+        models,
+        model: "claude-fable-5",
+      }),
+    ).toBeNull();
   });
 });

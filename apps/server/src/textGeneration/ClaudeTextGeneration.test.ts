@@ -55,6 +55,14 @@ function makeFakeClaudeBinary(dir: string) {
         '  printf "%s\\n" "HOME was $HOME" >&2',
         "  exit 5",
         "fi",
+        'if [ -n "$T3_FAKE_CLAUDE_BASE_URL_MUST_BE" ] && [ "$ANTHROPIC_BASE_URL" != "$T3_FAKE_CLAUDE_BASE_URL_MUST_BE" ]; then',
+        '  printf "%s\\n" "ANTHROPIC_BASE_URL was $ANTHROPIC_BASE_URL" >&2',
+        "  exit 6",
+        "fi",
+        'if [ -n "$T3_FAKE_CLAUDE_API_KEY_MUST_BE" ] && [ "$ANTHROPIC_API_KEY" != "$T3_FAKE_CLAUDE_API_KEY_MUST_BE" ]; then',
+        '  printf "%s\\n" "ANTHROPIC_API_KEY did not match" >&2',
+        "  exit 7",
+        "fi",
         'if [ -n "$T3_FAKE_CLAUDE_STDERR" ]; then',
         '  printf "%s\\n" "$T3_FAKE_CLAUDE_STDERR" >&2',
         "fi",
@@ -78,6 +86,12 @@ function withFakeClaudeEnv<A, E, R>(
     stdinMustContain?: string;
     homeMustBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
+    /**
+     * Extra per-instance environment merged over `process.env`, mirroring
+     * how the Claude driver passes `mergeProviderInstanceEnvironment` output
+     * into `makeClaudeTextGeneration`.
+     */
+    environment?: NodeJS.ProcessEnv;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
 ) {
@@ -184,7 +198,10 @@ function withFakeClaudeEnv<A, E, R>(
     );
 
     const config = decodeClaudeSettings(input.claudeConfig ?? {});
-    const textGeneration = yield* makeClaudeTextGeneration(config);
+    const textGeneration = yield* makeClaudeTextGeneration(
+      config,
+      input.environment ? { ...process.env, ...input.environment } : undefined,
+    );
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -316,6 +333,37 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
           }),
       );
     }),
+  );
+
+  it.effect("targets a configured custom endpoint with the instance API key (ILL-27 AC 2/3)", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Use custom endpoint",
+          },
+        }),
+        claudeConfig: { baseUrl: "http://127.0.0.1:8317" },
+        environment: {
+          ANTHROPIC_API_KEY: "sk-test-custom-endpoint",
+          T3_FAKE_CLAUDE_BASE_URL_MUST_BE: "http://127.0.0.1:8317",
+          T3_FAKE_CLAUDE_API_KEY_MUST_BE: "sk-test-custom-endpoint",
+        },
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "thread title",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent_local_gpt"),
+              model: "gpt-5.6-sol",
+            },
+          });
+
+          expect(generated.title).toBe(sanitizeThreadTitle("Use custom endpoint"));
+        }),
+    ),
   );
 
   it.effect("falls back when Claude thread title normalization becomes whitespace-only", () =>

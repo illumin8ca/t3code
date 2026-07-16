@@ -6,7 +6,7 @@ import {
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { SearchIcon } from "lucide-react";
+import { PlusIcon, SearchIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import { isModelPickerNewModel } from "./modelPickerModelHighlights";
@@ -88,6 +88,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onRequestClose?: () => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  /**
+   * When set, a "Custom endpoint…" action row is pinned to the bottom of
+   * the model list while a Claude instance is selected in the sidebar.
+   * Invoked when the user activates the row (to open the custom-endpoint
+   * dialog owned by the parent).
+   */
+  onRequestCustomClaudeEndpoint?: () => void;
 }) {
   const {
     keybindings: providedKeybindings,
@@ -95,6 +102,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     instanceEntries,
     getModelDisabledReason,
     onInstanceModelChange,
+    onRequestCustomClaudeEndpoint,
   } = props;
   const [searchQuery, setSearchQuery] = useState("");
   const [showTopScrollFade, setShowTopScrollFade] = useState(false);
@@ -222,6 +230,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
+  // "Custom endpoint…" is pinned as the last row of the Claude section:
+  // shown while a Claude instance is selected in the sidebar and the picker
+  // is neither searching (search flattens across instances) nor locked to a
+  // started thread (a new endpoint could not serve that thread anyway).
+  const showCustomClaudeEndpointRow =
+    onRequestCustomClaudeEndpoint !== undefined &&
+    !isSearching &&
+    !isLocked &&
+    selectedInstanceId !== "favorites" &&
+    entryByInstanceId.get(selectedInstanceId)?.driverKind === "claudeAgent";
   const lockedDisabledInstanceIds = useMemo(() => {
     if (!isLocked) {
       return undefined;
@@ -669,6 +687,22 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
               No models found
             </ComboboxEmpty>
+            {showCustomClaudeEndpointRow ? (
+              <div className="border-t border-border/70">
+                <button
+                  type="button"
+                  aria-label="Add custom Claude endpoint"
+                  className="flex w-full cursor-pointer items-center gap-2 px-4 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/60 focus-visible:text-foreground focus-visible:outline-none"
+                  onClick={() => {
+                    props.onRequestClose?.();
+                    onRequestCustomClaudeEndpoint?.();
+                  }}
+                >
+                  <PlusIcon className="size-4 shrink-0" aria-hidden />
+                  Custom endpoint…
+                </button>
+              </div>
+            ) : null}
           </div>
         </Combobox>
       </div>

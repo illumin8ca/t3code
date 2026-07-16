@@ -69,6 +69,7 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   enabled: false,
   binaryPath: "claude",
   homePath: "",
+  baseUrl: "",
   customModels: [],
   launchArgs: "",
   ...overrides,

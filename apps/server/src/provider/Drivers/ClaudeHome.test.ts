@@ -20,7 +20,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const resolved = path.resolve(NodeOS.homedir());
 
         expect(yield* resolveClaudeHomePath({ homePath: "" })).toBe(resolved);
-        expect(yield* makeClaudeEnvironment({ homePath: "" })).toBe(process.env);
+        expect(yield* makeClaudeEnvironment({ homePath: "", baseUrl: "" })).toBe(process.env);
       }),
     );
 
@@ -31,11 +31,13 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const resolved = path.resolve(NodeOS.homedir(), ".claude-work");
 
         expect(yield* resolveClaudeHomePath({ homePath })).toBe(resolved);
-        expect((yield* makeClaudeEnvironment({ homePath })).HOME).toBe(resolved);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath })).toBe(`claude:home:${resolved}`);
-        expect(yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath })).toBe(
-          `claude\0${resolved}`,
+        expect((yield* makeClaudeEnvironment({ homePath, baseUrl: "" })).HOME).toBe(resolved);
+        expect(yield* makeClaudeContinuationGroupKey({ homePath, baseUrl: "" })).toBe(
+          `claude:home:${resolved}`,
         );
+        expect(
+          yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath, baseUrl: "" }),
+        ).toBe(`claude\0${resolved}\0`);
       }),
     );
 
@@ -44,9 +46,83 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const path = yield* Path.Path;
         const resolved = path.resolve(NodeOS.homedir());
 
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" })).toBe(
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: "", baseUrl: "" })).toBe(
           `claude:home:${resolved}`,
         );
+      }),
+    );
+  });
+
+  describe("custom Anthropic-compatible endpoint", () => {
+    it.effect("injects ANTHROPIC_BASE_URL when a base URL is configured", () =>
+      Effect.gen(function* () {
+        const baseEnv = { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-x" };
+        const environment = yield* makeClaudeEnvironment(
+          { homePath: "", baseUrl: "http://127.0.0.1:8317" },
+          baseEnv,
+        );
+
+        expect(environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
+        // Instance-environment variables (e.g. the sensitive API key) pass
+        // through untouched, and HOME is not overridden without a homePath.
+        expect(environment.ANTHROPIC_API_KEY).toBe("sk-x");
+        expect(environment.PATH).toBe("/usr/bin");
+        expect(environment.HOME).toBeUndefined();
+      }),
+    );
+
+    it.effect("combines a Claude HOME override with a custom base URL", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const homePath = "~/.claude-custom";
+        const resolved = path.resolve(NodeOS.homedir(), ".claude-custom");
+        const environment = yield* makeClaudeEnvironment(
+          { homePath, baseUrl: "http://127.0.0.1:8317" },
+          { PATH: "/usr/bin" },
+        );
+
+        expect(environment.HOME).toBe(resolved);
+        expect(environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
+      }),
+    );
+
+    it.effect("does not inject ANTHROPIC_BASE_URL when the base URL is blank", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeClaudeEnvironment(
+          { homePath: "", baseUrl: "   " },
+          { PATH: "/usr/bin" },
+        );
+
+        expect(environment.ANTHROPIC_BASE_URL).toBeUndefined();
+      }),
+    );
+
+    it.effect("separates continuation groups for instances on different endpoints", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const resolved = path.resolve(NodeOS.homedir());
+        const defaultKey = yield* makeClaudeContinuationGroupKey({ homePath: "", baseUrl: "" });
+        const customKey = yield* makeClaudeContinuationGroupKey({
+          homePath: "",
+          baseUrl: "http://127.0.0.1:8317",
+        });
+
+        expect(defaultKey).toBe(`claude:home:${resolved}`);
+        expect(customKey).toBe(`claude:home:${resolved}:base:http://127.0.0.1:8317`);
+        expect(customKey).not.toBe(defaultKey);
+      }),
+    );
+
+    it.effect("separates capabilities cache keys for instances on different endpoints", () =>
+      Effect.gen(function* () {
+        const shared = { binaryPath: "claude", homePath: "" };
+        const defaultKey = yield* makeClaudeCapabilitiesCacheKey({ ...shared, baseUrl: "" });
+        const customKey = yield* makeClaudeCapabilitiesCacheKey({
+          ...shared,
+          baseUrl: "http://127.0.0.1:8317",
+        });
+
+        expect(customKey).not.toBe(defaultKey);
       }),
     );
   });

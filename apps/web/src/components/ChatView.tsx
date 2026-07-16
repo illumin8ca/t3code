@@ -221,6 +221,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
+  getCustomClaudeEndpointModelDisabledReason,
   getStartedThreadModelChangeBlockReason,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -4745,6 +4746,15 @@ function ChatViewContent(props: ChatViewProps) {
 
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
+      const customEndpointReason = getCustomClaudeEndpointModelDisabledReason({
+        instanceConfig: settings.providerInstances?.[instanceId],
+        models:
+          providerStatuses.find((snapshot) => snapshot.instanceId === instanceId)?.models ?? [],
+        model,
+      });
+      if (customEndpointReason !== null) {
+        return customEndpointReason;
+      }
       if (!activeThread) {
         return null;
       }
@@ -4757,7 +4767,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeThread, providerStatuses],
+    [activeThread, providerStatuses, settings.providerInstances],
   );
 
   const onProviderModelSelect = useCallback(
