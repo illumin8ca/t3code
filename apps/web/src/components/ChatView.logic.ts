@@ -4,7 +4,9 @@ import {
   ProjectId,
   type ModelSelection,
   type ProviderDriverKind,
+  type ProviderInstanceConfig,
   type ServerProvider,
+  type ServerProviderModel,
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
@@ -337,6 +339,52 @@ export function getStartedThreadModelChangeBlockReason(input: {
     title: "Start a new chat to change models",
     description: "This provider does not allow switching models after a conversation has started.",
   };
+}
+
+/**
+ * Read the configured custom Anthropic-compatible base URL from a Claude
+ * provider-instance config envelope. The driver-specific config blob is
+ * `unknown` at the contracts layer, so this narrows it structurally rather
+ * than decoding the full `ClaudeSettings` schema on every picker render.
+ */
+export function getCustomClaudeEndpointBaseUrl(
+  instanceConfig: Pick<ProviderInstanceConfig, "driver" | "config"> | undefined,
+): string | null {
+  if (instanceConfig?.driver !== "claudeAgent") {
+    return null;
+  }
+  const config = instanceConfig.config;
+  if (!config || typeof config !== "object") {
+    return null;
+  }
+  const baseUrl = (config as { baseUrl?: unknown }).baseUrl;
+  if (typeof baseUrl !== "string") {
+    return null;
+  }
+  const trimmed = baseUrl.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Built-in Claude model slugs are unavailable on a Claude instance pointed
+ * at a custom Anthropic-compatible endpoint — only that instance's
+ * `customModels` are served there. Returns a human-readable disabled reason
+ * for built-in slugs on such instances, `null` otherwise (including for
+ * built-in Claude instances, which are unaffected).
+ */
+export function getCustomClaudeEndpointModelDisabledReason(input: {
+  instanceConfig: Pick<ProviderInstanceConfig, "driver" | "config"> | undefined;
+  models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "isCustom">>;
+  model: string;
+}): string | null {
+  if (getCustomClaudeEndpointBaseUrl(input.instanceConfig) === null) {
+    return null;
+  }
+  const model = input.models.find((candidate) => candidate.slug === input.model);
+  if (!model || model.isCustom) {
+    return null;
+  }
+  return "Built-in Claude models are unavailable on a custom endpoint.";
 }
 
 export async function waitForStartedServerThread(

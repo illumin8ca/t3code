@@ -2491,6 +2491,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }}
                   getModelDisabledReason={getModelDisabledReason}
                   onInstanceModelChange={onProviderModelSelect}
+                  enableCustomClaudeEndpoint
                 />
 
                 {isComposerFooterCompact ? (

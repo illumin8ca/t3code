@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ClaudeSettings,
   ClientSettingsSchema,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
@@ -84,6 +85,29 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
         providerInstances: { "1bad": { driver: "codex" } },
       }),
     ).toThrow();
+  });
+});
+
+describe("ClaudeSettings.baseUrl (custom Anthropic-compatible endpoint)", () => {
+  const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+
+  it("defaults to empty so existing persisted settings still parse", () => {
+    const decoded = decodeClaudeSettings({});
+    expect(decoded.baseUrl).toBe("");
+    expect(DEFAULT_SERVER_SETTINGS.providers.claudeAgent.baseUrl).toBe("");
+  });
+
+  it("decodes and trims a configured base URL", () => {
+    expect(decodeClaudeSettings({ baseUrl: "  http://127.0.0.1:8317  " }).baseUrl).toBe(
+      "http://127.0.0.1:8317",
+    );
+  });
+
+  it("accepts baseUrl through the legacy provider settings patch", () => {
+    const patch = decodeServerSettingsPatch({
+      providers: { claudeAgent: { baseUrl: "http://127.0.0.1:8317" } },
+    });
+    expect(patch.providers?.claudeAgent?.baseUrl).toBe("http://127.0.0.1:8317");
   });
 });
 
