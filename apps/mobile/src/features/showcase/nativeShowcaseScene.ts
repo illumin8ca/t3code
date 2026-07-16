@@ -1,6 +1,6 @@
 import { requireOptionalNativeModule } from "expo";
 
-export const SHOWCASE_SCENES = ["threads", "thread", "terminal", "review"] as const;
+export const SHOWCASE_SCENES = ["threads", "thread", "terminal", "review", "environments"] as const;
 export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
 
 interface NativeShowcaseControls {
@@ -14,11 +14,31 @@ function nativeShowcaseControls(): NativeShowcaseControls | null {
   return requireOptionalNativeModule<NativeShowcaseControls>("T3NativeControls");
 }
 
-export function getNativeShowcasePairingUrl(): string | null {
+export function getNativeShowcasePairingUrls(): ReadonlyArray<string> {
   try {
-    return nativeShowcaseControls()?.getShowcasePairingUrl?.()?.trim() || null;
+    let raw = nativeShowcaseControls()?.getShowcasePairingUrl?.()?.trim();
+    if (!raw) return [];
+    if (raw.startsWith("json-uri:")) {
+      try {
+        raw = decodeURIComponent(raw.slice("json-uri:".length));
+      } catch {
+        return [];
+      }
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (candidate): candidate is string =>
+            typeof candidate === "string" && candidate.trim().length > 0,
+        );
+      }
+    } catch {
+      // Older runners pass a single URL rather than a JSON array.
+    }
+    return [raw];
   } catch {
-    return null;
+    return [];
   }
 }
 

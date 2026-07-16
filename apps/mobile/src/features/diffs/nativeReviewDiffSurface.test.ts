@@ -96,5 +96,12 @@ describe("isPendingNativeViewRegistration", () => {
         new Error("Unable to find the 'T3ReviewDiffView' view for this native tag"),
       ),
     ).toBe(false);
+    expect(
+      isPendingNativeViewRegistration(
+        new Error(
+          "Unable to find the class expo.modules.t3reviewdiff.T3ReviewDiffView view with tag 1150",
+        ),
+      ),
+    ).toBe(true);
   });
 });

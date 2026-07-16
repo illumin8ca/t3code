@@ -6,17 +6,20 @@ import { useConnectionController } from "../connection/useConnectionController";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useWorkspaceState } from "../../state/workspace";
 import {
-  getNativeShowcasePairingUrl,
+  getNativeShowcasePairingUrls,
   getNativeShowcaseScene,
   markNativeShowcaseReady,
   type ShowcaseScene,
 } from "./nativeShowcaseScene";
 
 const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
-const SHOWCASE_THREAD_ID = "polish-command-palette";
+const SHOWCASE_THREAD_ID = "terminal-heartbeat";
 
 function sceneFromPathname(pathname: string): ShowcaseScene | null {
   const routePath = pathname.split(/[?#]/u, 1)[0] ?? pathname;
+  if (routePath === "/settings" || routePath.endsWith("/settings/environments")) {
+    return "environments";
+  }
   if (routePath.endsWith("/terminal")) return "terminal";
   if (routePath.endsWith("/review")) return "review";
   if (routePath.startsWith("/threads/")) return "thread";
@@ -27,25 +30,25 @@ function sceneFromPathname(pathname: string): ShowcaseScene | null {
 export function ShowcaseCaptureCoordinator(props: { readonly pathname: string }) {
   const navigation = useNavigation();
   const { connectPairingUrl } = useConnectionController();
-  const { state: workspaceState } = useWorkspaceState();
+  const workspace = useWorkspaceState();
   const projects = useProjects();
   const threads = useThreadShells();
-  const attemptedPairingRef = useRef<string | null>(null);
-  const [pairingUrl, setPairingUrl] = useState<string | null>(null);
+  const attemptedPairingRef = useRef(new Set<string>());
+  const [pairingUrls, setPairingUrls] = useState<ReadonlyArray<string>>([]);
   const [requestedScene, setRequestedScene] = useState<ShowcaseScene | null>(null);
   const [readyScene, setReadyScene] = useState<ShowcaseScene | null>(null);
 
   useEffect(() => {
-    if (!SHOWCASE_ENABLED || pairingUrl !== null) return;
+    if (!SHOWCASE_ENABLED || pairingUrls.length > 0) return;
 
-    const readPairingUrl = () => {
-      const value = getNativeShowcasePairingUrl();
-      if (value) setPairingUrl(value);
+    const readPairingUrls = () => {
+      const values = getNativeShowcasePairingUrls();
+      if (values.length > 0) setPairingUrls(values);
     };
-    readPairingUrl();
-    const interval = setInterval(readPairingUrl, 250);
+    readPairingUrls();
+    const interval = setInterval(readPairingUrls, 250);
     return () => clearInterval(interval);
-  }, [pairingUrl]);
+  }, [pairingUrls.length]);
 
   useEffect(() => {
     if (!SHOWCASE_ENABLED) return;
@@ -60,16 +63,25 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
   }, []);
 
   useEffect(() => {
-    if (!SHOWCASE_ENABLED || pairingUrl === null) return;
-    if (attemptedPairingRef.current === pairingUrl) return;
-    attemptedPairingRef.current = pairingUrl;
-    void connectPairingUrl(pairingUrl);
-  }, [connectPairingUrl, pairingUrl]);
+    if (!SHOWCASE_ENABLED || pairingUrls.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const pairingUrl of pairingUrls) {
+        if (cancelled || attemptedPairingRef.current.has(pairingUrl)) continue;
+        attemptedPairingRef.current.add(pairingUrl);
+        await connectPairingUrl(pairingUrl);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connectPairingUrl, pairingUrls]);
 
   const scene = sceneFromPathname(props.pathname);
   const hasFixture =
-    workspaceState.hasReadyEnvironment &&
-    projects.length > 0 &&
+    workspace.state.hasReadyEnvironment &&
+    workspace.environments.length >= 3 &&
+    projects.length >= 3 &&
     threads.some((thread) => String(thread.id) === SHOWCASE_THREAD_ID);
   const showcaseThread = threads.find((thread) => String(thread.id) === SHOWCASE_THREAD_ID);
 
@@ -83,13 +95,17 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
     };
     if (requestedScene === "threads") {
       navigation.dispatch(StackActions.replace("Home"));
+    } else if (requestedScene === "environments") {
+      navigation.dispatch(
+        StackActions.replace("SettingsSheet", { screen: "SettingsEnvironments" }),
+      );
     } else if (requestedScene === "thread") {
       navigation.dispatch(StackActions.replace("Thread", params));
     } else if (requestedScene === "terminal") {
       navigation.dispatch(
         StackActions.replace("ThreadTerminal", { ...params, terminalId: "term-1" }),
       );
-    } else {
+    } else if (requestedScene === "review") {
       navigation.dispatch(StackActions.replace("ThreadReview", params));
     }
   }, [hasFixture, navigation, requestedScene, scene, showcaseThread]);

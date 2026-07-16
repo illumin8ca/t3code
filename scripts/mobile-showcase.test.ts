@@ -2,6 +2,12 @@ import { assert, it } from "@effect/vitest";
 
 import type { ShowcaseConfig } from "./mobile-showcase.config.ts";
 import {
+  SHOWCASE_ENVIRONMENTS,
+  SHOWCASE_PROJECTS,
+  SHOWCASE_THREADS,
+} from "./mobile-showcase-environment.ts";
+import {
+  encodeAndroidPairingUrls,
   parseShowcaseCliArgs,
   parsePairingCredentialOutput,
   planShowcaseCaptures,
@@ -86,16 +92,37 @@ it("selects a reachable LAN IPv4 address", () => {
 it("maps capture scenes to the real application routes", () => {
   assert.equal(showcaseSceneUrl("threads", "environment-1"), "t3code-dev://");
   assert.equal(
+    showcaseSceneUrl("environments", "environment-1"),
+    "t3code-dev://settings/environments",
+  );
+  assert.equal(
     showcaseSceneUrl("thread", "environment-1"),
-    "t3code-dev://threads/environment-1/polish-command-palette",
+    "t3code-dev://threads/environment-1/terminal-heartbeat",
   );
   assert.equal(
     showcaseSceneUrl("terminal", "environment-1"),
-    "t3code-dev://threads/environment-1/polish-command-palette/terminal?terminalId=term-1",
+    "t3code-dev://threads/environment-1/terminal-heartbeat/terminal?terminalId=term-1",
   );
   assert.equal(
     showcaseSceneUrl("review", "environment-1"),
-    "t3code-dev://threads/environment-1/polish-command-palette/review",
+    "t3code-dev://threads/environment-1/terminal-heartbeat/review",
+  );
+});
+
+it("seeds a playful multi-environment project spectrum", () => {
+  assert.deepStrictEqual(
+    SHOWCASE_PROJECTS.map((project) => project.title),
+    ["Codex", "React", "Linux"],
+  );
+  assert.deepStrictEqual(
+    SHOWCASE_ENVIRONMENTS.map((environment) => environment.label),
+    ["Moonbase Terminal", "Suspense Station", "Kernel Cabin"],
+  );
+  assert.equal(SHOWCASE_THREADS.length, 6);
+  assert.equal(new Set(SHOWCASE_THREADS.map((thread) => thread.projectId)).size, 3);
+  assert.equal(
+    SHOWCASE_PROJECTS.every((project) => project.favicon.includes("<svg")),
+    true,
   );
 });
 
@@ -104,4 +131,12 @@ it("reads multiline JSON from the pairing CLI", () => {
     parsePairingCredentialOutput('server log\n{\n  "credential": "PAIR-ME"\n}\n'),
     "PAIR-ME",
   );
+});
+
+it("encodes Android pairing URLs without shell-sensitive JSON quotes", () => {
+  const urls = ["http://10.0.2.2:65164/#token=ONE", "http://10.0.2.2:65198/#token=TWO"];
+  const encoded = encodeAndroidPairingUrls(urls);
+  assert.equal(encoded.startsWith("json-uri:"), true);
+  assert.deepStrictEqual(JSON.parse(decodeURIComponent(encoded.slice("json-uri:".length))), urls);
+  assert.equal(encoded.includes('"'), false);
 });

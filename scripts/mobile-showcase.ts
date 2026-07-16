@@ -18,6 +18,8 @@ import showcaseConfig, {
   type ShowcaseScene,
 } from "./mobile-showcase.config.ts";
 import {
+  SHOWCASE_ENVIRONMENTS,
+  SHOWCASE_PROJECTS,
   SHOWCASE_TERMINAL_ID,
   SHOWCASE_THREAD_ID,
   seedShowcaseEnvironment,
@@ -334,11 +336,30 @@ exec /bin/cat
   return shellPath;
 }
 
+async function createShowcaseLabelProbe(baseDir: string, label: string): Promise<string> {
+  const binDirectory = NodePath.join(baseDir, "showcase-bin");
+  const probePath = NodePath.join(binDirectory, "scutil");
+  await NodeFSP.mkdir(binDirectory, { recursive: true });
+  await NodeFSP.writeFile(
+    probePath,
+    `#!/bin/sh
+if [ "$1" = "--get" ] && [ "$2" = "ComputerName" ]; then
+  printf '%s\\n' ${JSON.stringify(label)}
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  return binDirectory;
+}
+
 function startShowcaseServer(
   baseDir: string,
   workspaceRoot: string,
   port: number,
   shellPath: string,
+  labelProbeDirectory: string,
 ): NodeChildProcess.ChildProcess {
   return spawnProcess(
     "node",
@@ -359,6 +380,7 @@ function startShowcaseServer(
     {
       env: {
         ...NodeProcess.env,
+        PATH: `${labelProbeDirectory}:${NodeProcess.env.PATH ?? ""}`,
         SHELL: shellPath,
       },
     },
@@ -397,12 +419,17 @@ function buildShowcasePairingUrl(host: string, port: number, credential: string)
 
 export function showcaseSceneUrl(scene: ShowcaseScene, environmentId: string): string {
   if (scene === "threads") return `${APP_SCHEME}://`;
+  if (scene === "environments") return `${APP_SCHEME}://settings/environments`;
   const threadPath = `threads/${encodeURIComponent(environmentId)}/${SHOWCASE_THREAD_ID}`;
   if (scene === "thread") return `${APP_SCHEME}://${threadPath}`;
   if (scene === "terminal") {
     return `${APP_SCHEME}://${threadPath}/terminal?terminalId=${SHOWCASE_TERMINAL_ID}`;
   }
   return `${APP_SCHEME}://${threadPath}/review`;
+}
+
+export function encodeAndroidPairingUrls(pairingUrls: ReadonlyArray<string>): string {
+  return `json-uri:${encodeURIComponent(JSON.stringify(pairingUrls))}`;
 }
 
 function startMetro(config: ShowcaseConfig): NodeChildProcess.ChildProcess {
@@ -559,7 +586,7 @@ async function captureIos(
   outputDirectory: string,
   config: ShowcaseConfig,
   metroHost: string,
-  pairingUrl: string,
+  pairingUrls: ReadonlyArray<string>,
 ): Promise<boolean> {
   const simulator = await findIosSimulator(capture.device.simulator);
   const startedByRunner = simulator.state !== "Booted";
@@ -617,7 +644,7 @@ async function captureIos(
       "--initialUrl",
       metroUrl,
       "--showcasePairingUrl",
-      pairingUrl,
+      JSON.stringify(pairingUrls),
       "--showcaseScene",
       firstScene,
     ]);
@@ -817,7 +844,7 @@ async function captureAndroid(
   apkPath: string | null,
   outputDirectory: string,
   config: ShowcaseConfig,
-  pairingUrl: string,
+  pairingUrls: ReadonlyArray<string>,
 ): Promise<{ readonly startedByRunner: boolean; readonly serial: string }> {
   const running = await runningAndroidAvds();
   const existingSerial = running.get(capture.device.avd);
@@ -859,7 +886,7 @@ async function captureAndroid(
     `${APP_SCHEME}://expo-development-client/?url=${metroUrl}`,
     "--es",
     "showcasePairingUrl",
-    pairingUrl,
+    encodeAndroidPairingUrls(pairingUrls),
     "--es",
     "showcaseScene",
     firstScene,
@@ -921,14 +948,16 @@ async function main(): Promise<void> {
   const outputDirectory = NodePath.resolve(REPO_ROOT, showcaseConfig.outputDirectory);
   await NodeFSP.mkdir(outputDirectory, { recursive: true });
 
-  const showcaseBaseDir = await NodeFSP.mkdtemp(
+  const showcaseRootDir = await NodeFSP.mkdtemp(
     NodePath.join(NodeOS.tmpdir(), "t3-mobile-showcase-"),
   );
-  const serverPort = await reserveAvailablePort();
-  const showcaseShell = await createShowcaseShell(showcaseBaseDir);
-  const showcaseWorkspaceRoot = NodePath.join(showcaseBaseDir, "workspace", "lumen-notes");
-  await NodeFSP.mkdir(showcaseWorkspaceRoot, { recursive: true });
-  let showcaseServer: NodeChildProcess.ChildProcess | null = null;
+  const showcaseServers: NodeChildProcess.ChildProcess[] = [];
+  const showcaseEnvironments: Array<{
+    readonly baseDir: string;
+    readonly environmentId: string;
+    readonly label: string;
+    readonly port: number;
+  }> = [];
   let metro: NodeChildProcess.ChildProcess | null = null;
   const startedIosUdids: string[] = [];
   const androidCleanups: Array<{
@@ -938,19 +967,34 @@ async function main(): Promise<void> {
   }> = [];
 
   try {
-    showcaseServer = startShowcaseServer(
-      showcaseBaseDir,
-      showcaseWorkspaceRoot,
-      serverPort,
-      showcaseShell,
-    );
-    await waitForPort(serverPort, "Showcase server");
-    await seedShowcaseEnvironment({ baseDir: showcaseBaseDir });
-    const environmentId = (
-      await NodeFSP.readFile(NodePath.join(showcaseBaseDir, "userdata", "environment-id"), "utf8")
-    ).trim();
-    if (!environmentId) {
-      throw new Error("Showcase server did not persist an environment id.");
+    for (const environment of SHOWCASE_ENVIRONMENTS) {
+      const projectId = environment.projectIds[0];
+      const project = SHOWCASE_PROJECTS.find((candidate) => candidate.id === projectId);
+      if (!project) throw new Error(`Showcase environment '${environment.id}' has no project.`);
+
+      const baseDir = NodePath.join(showcaseRootDir, "environments", environment.id);
+      const workspaceRoot = NodePath.join(baseDir, "workspace", project.directory);
+      const port = await reserveAvailablePort();
+      await NodeFSP.mkdir(workspaceRoot, { recursive: true });
+      const shellPath = await createShowcaseShell(baseDir);
+      const labelProbeDirectory = await createShowcaseLabelProbe(baseDir, environment.label);
+      const server = startShowcaseServer(
+        baseDir,
+        workspaceRoot,
+        port,
+        shellPath,
+        labelProbeDirectory,
+      );
+      showcaseServers.push(server);
+      await waitForPort(port, `${environment.label} server`);
+      await seedShowcaseEnvironment({ baseDir, projectIds: environment.projectIds });
+      const environmentId = (
+        await NodeFSP.readFile(NodePath.join(baseDir, "userdata", "environment-id"), "utf8")
+      ).trim();
+      if (!environmentId) {
+        throw new Error(`${environment.label} did not persist an environment id.`);
+      }
+      showcaseEnvironments.push({ baseDir, environmentId, label: environment.label, port });
     }
 
     if (!options.skipMetro) {
@@ -977,9 +1021,13 @@ async function main(): Promise<void> {
       : null;
 
     for (const capture of captures) {
-      const credential = await issuePairingCredential(showcaseBaseDir);
       const pairingHost = capture.device.platform === "ios" ? "127.0.0.1" : "10.0.2.2";
-      const pairingUrl = buildShowcasePairingUrl(pairingHost, serverPort, credential);
+      const pairingUrls = await Promise.all(
+        showcaseEnvironments.map(async (environment) => {
+          const credential = await issuePairingCredential(environment.baseDir);
+          return buildShowcasePairingUrl(pairingHost, environment.port, credential);
+        }),
+      );
       if (capture.device.platform === "ios") {
         const simulator = await findIosSimulator(capture.device.simulator);
         const started = await captureIos(
@@ -988,7 +1036,7 @@ async function main(): Promise<void> {
           outputDirectory,
           showcaseConfig,
           metroHost,
-          pairingUrl,
+          pairingUrls,
         );
         if (started) startedIosUdids.push(simulator.udid);
       } else {
@@ -997,7 +1045,7 @@ async function main(): Promise<void> {
           androidApkPath,
           outputDirectory,
           showcaseConfig,
-          pairingUrl,
+          pairingUrls,
         );
         androidCleanups.push({ device: capture.device, ...result });
       }
@@ -1008,9 +1056,12 @@ async function main(): Promise<void> {
     );
     if (options.keepRunning) {
       metro?.unref();
-      showcaseServer?.unref();
+      for (const server of showcaseServers) server.unref();
+      const serverSummary = showcaseEnvironments
+        .map((environment) => `${environment.label}:${environment.port}`)
+        .join(", ");
       NodeProcess.stdout.write(
-        `Showcase environment kept at ${showcaseBaseDir} (server port ${serverPort}).\n`,
+        `Showcase environments kept at ${showcaseRootDir} (${serverSummary}).\n`,
       );
     }
   } finally {
@@ -1025,8 +1076,8 @@ async function main(): Promise<void> {
         await runCommand("xcrun", ["simctl", "shutdown", udid]).catch(() => undefined);
       }
       metro?.kill("SIGTERM");
-      showcaseServer?.kill("SIGTERM");
-      await NodeFSP.rm(showcaseBaseDir, { recursive: true, force: true });
+      for (const server of showcaseServers) server.kill("SIGTERM");
+      await NodeFSP.rm(showcaseRootDir, { recursive: true, force: true });
     }
   }
 }

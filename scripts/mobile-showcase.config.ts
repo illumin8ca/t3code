@@ -56,14 +56,14 @@ const config: ShowcaseConfig = {
       platform: "ios",
       simulator: "iPhone 17 Pro Max",
       appearance: "dark",
-      scenes: ["thread", "terminal", "review", "threads"],
+      scenes: ["thread", "terminal", "review", "threads", "environments"],
     },
     {
       id: "ipad-13",
       platform: "ios",
       simulator: "iPad Pro 13-inch (M5)",
       appearance: "dark",
-      scenes: ["thread", "terminal", "review"],
+      scenes: ["thread", "terminal", "review", "threads", "environments"],
     },
     {
       id: "pixel",
@@ -71,7 +71,20 @@ const config: ShowcaseConfig = {
       avd: "Pixel_10_Pro",
       abi: "arm64-v8a",
       appearance: "dark",
-      scenes: ["thread", "terminal", "review", "threads"],
+      scenes: ["thread", "terminal", "review", "threads", "environments"],
+    },
+    {
+      id: "android-tablet",
+      platform: "android",
+      avd: "Pixel_10_Pro",
+      abi: "arm64-v8a",
+      appearance: "dark",
+      viewport: {
+        width: 1600,
+        height: 2560,
+        density: 320,
+      },
+      scenes: ["thread", "terminal", "review", "threads", "environments"],
     },
   ],
 };

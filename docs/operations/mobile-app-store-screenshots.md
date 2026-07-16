@@ -1,14 +1,15 @@
 # Mobile app-store screenshot harness
 
-The screenshot harness runs the real mobile application against a disposable local T3 environment.
-It creates an ephemeral T3 base directory, a real Git project with deterministic changes, seeded
-orchestration projections, and persisted terminal history. The app pairs with that server through
-its normal connection flow and React Navigation opens the production Home, Thread,
-ThreadTerminal, and ThreadReview routes.
+The screenshot harness runs the real mobile application against three disposable local T3
+environments. It creates an isolated base directory and server for each environment, real Git
+projects with deterministic content, seeded orchestration projections, and persisted terminal
+history. The app pairs with every server through its normal connection flow and React Navigation
+opens the production Home, Thread, ThreadTerminal, ThreadReview, and SettingsEnvironments routes.
 
-No screenshot-specific screen recreates application UI. EXPO_PUBLIC_SHOWCASE=1 only enables the
-non-rendering pairing/readiness coordinator and disables terminal autofocus so captures do not
-contain the software keyboard.
+No screenshot-specific screen recreates application UI. `EXPO_PUBLIC_SHOWCASE=1` only enables the
+non-rendering pairing/readiness coordinator, disables terminal autofocus so captures do not contain
+the software keyboard, and supplies deterministic T3 Connect discovery rows to the real
+Environments screen. The local environment cards always come from real paired servers.
 
 ## Capture the default matrix
 
@@ -18,19 +19,21 @@ From the repository root:
 
 The command:
 
-1. Creates a temporary T3 base directory and starts a local server on an available port.
-2. Creates a Lumen Notes Git repository with a feature branch and uncommitted review diff.
-3. Seeds the server's migrated SQLite database with projects, threads, messages, activities, and
+1. Creates three temporary T3 base directories and starts a local server for each on an available
+   port.
+2. Creates Codex, React, and Linux Git repositories with recognizable favicons, feature branches,
+   and a deterministic Codex review diff.
+3. Seeds each server's migrated SQLite database with playful threads, messages, activities, and
    terminal history.
 4. Starts an isolated Metro server, builds the selected native apps, and boots each device.
-5. Pairs each clean app installation with the temporary environment.
+5. Pairs each clean app installation with Moonbase Terminal, Suspense Station, and Kernel Cabin.
 6. Navigates to the real application route for every requested scene.
 7. Normalizes appearance and status bars and writes exact-size PNGs to
    artifacts/app-store/screenshots/.
 
-The server, Metro, temporary base directory, and devices started by the runner are cleaned up after
-capture. Pass --keep-running to retain them for inspection; the runner prints the base-directory
-path and server port.
+The servers, Metro, temporary root directory, and devices started by the runner are cleaned up after
+capture. Pass `--keep-running` to retain them for inspection; the runner prints the base-directory
+paths and server ports.
 
 Captures wait for the real environment snapshot to hydrate and for the requested route to become
 active. Both platforms record readiness in the simulator/emulator app container. A final settle
@@ -47,6 +50,10 @@ The default matrix is:
 - iphone-6.9: iPhone 17 Pro Max
 - ipad-13: iPad Pro 13-inch (M5)
 - pixel: Pixel 10 Pro Android AVD
+- android-tablet: Pixel Android AVD rendered at an 800dp tablet viewport
+
+Each device captures the thread, terminal, review, thread list, and environments scenes, for 20
+PNG files in the complete matrix.
 
 Edit [mobile-showcase.config.ts](../../scripts/mobile-showcase.config.ts) to change simulator or AVD
 names, light/dark appearance, scenes, output directory, capture delay, Android ABI, or viewport.
@@ -81,8 +88,9 @@ List the matrix and flags:
   [mobile-showcase.ts](../../scripts/mobile-showcase.ts)
 
 Fixture timestamps are generated relative to capture startup so every route shows stable relative
-labels while the server still receives valid current data. The same ephemeral environment serves
-iPhone, iPad, and Android; responsive differences come entirely from the production app layout.
+labels while the server still receives valid current data. The same deterministic three-environment
+ensemble serves iPhone, iPad, Android phone, and Android tablet captures; responsive differences
+come entirely from the production app layout.
 
 ## Local prerequisites
 
