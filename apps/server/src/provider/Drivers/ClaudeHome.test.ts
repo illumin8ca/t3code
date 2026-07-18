@@ -31,13 +31,24 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const resolved = path.resolve(NodeOS.homedir(), ".claude-work");
 
         expect(yield* resolveClaudeHomePath({ homePath })).toBe(resolved);
-        expect((yield* makeClaudeEnvironment({ homePath, baseUrl: "" })).HOME).toBe(resolved);
+        expect((yield* makeClaudeEnvironment({ homePath, baseUrl: "" })).CLAUDE_CONFIG_DIR).toBe(
+          resolved,
+        );
         expect(yield* makeClaudeContinuationGroupKey({ homePath, baseUrl: "" })).toBe(
           `claude:home:${resolved}`,
         );
         expect(
           yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath, baseUrl: "" }),
-        ).toBe(`claude\0${resolved}\0`);
+        ).toBe(`claude\0${resolved}\0\0`);
+      }),
+    );
+
+    it.effect("separates capability probes by cwd", () =>
+      Effect.gen(function* () {
+        const config = { binaryPath: "claude", homePath: "", baseUrl: "" };
+        const first = yield* makeClaudeCapabilitiesCacheKey(config, "/repo-a");
+        const second = yield* makeClaudeCapabilitiesCacheKey(config, "/repo-b");
+        expect(first).not.toBe(second);
       }),
     );
 
@@ -64,10 +75,10 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
 
         expect(environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
         // Instance-environment variables (e.g. the sensitive API key) pass
-        // through untouched, and HOME is not overridden without a homePath.
+        // through untouched, and no config dir is set without a homePath.
         expect(environment.ANTHROPIC_API_KEY).toBe("sk-x");
         expect(environment.PATH).toBe("/usr/bin");
-        expect(environment.HOME).toBeUndefined();
+        expect(environment.CLAUDE_CONFIG_DIR).toBeUndefined();
       }),
     );
 
@@ -81,7 +92,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           { PATH: "/usr/bin" },
         );
 
-        expect(environment.HOME).toBe(resolved);
+        expect(environment.CLAUDE_CONFIG_DIR).toBe(resolved);
         expect(environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
       }),
     );

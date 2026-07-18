@@ -24,7 +24,13 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   if (homePath.length === 0 && baseUrl.length === 0) return resolvedBaseEnv;
   const next: NodeJS.ProcessEnv = { ...resolvedBaseEnv };
   if (homePath.length > 0) {
-    next.HOME = yield* resolveClaudeHomePath(config);
+    // Isolate this instance's config via CLAUDE_CONFIG_DIR rather than HOME.
+    // Overriding HOME also relocates the macOS login keychain lookup
+    // ($HOME/Library/Keychains), so the spawned CLI can't find its stored
+    // OAuth credentials and reports "Not logged in". CLAUDE_CONFIG_DIR points
+    // Claude Code at its config dir directly while leaving HOME (and the
+    // keychain) intact.
+    next.CLAUDE_CONFIG_DIR = yield* resolveClaudeHomePath(config);
   }
   if (baseUrl.length > 0) {
     next.ANTHROPIC_BASE_URL = baseUrl;
@@ -50,8 +56,9 @@ export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationG
 export const makeClaudeCapabilitiesCacheKey = Effect.fn("makeClaudeCapabilitiesCacheKey")(
   function* (
     config: Pick<ClaudeSettings, "binaryPath" | "homePath" | "baseUrl">,
+    cwd?: string,
   ): Effect.fn.Return<string, never, Path.Path> {
     const resolvedHomePath = yield* resolveClaudeHomePath(config);
-    return `${config.binaryPath}\0${resolvedHomePath}\0${config.baseUrl.trim()}`;
+    return `${config.binaryPath}\0${resolvedHomePath}\0${cwd ?? ""}\0${config.baseUrl.trim()}`;
   },
 );
