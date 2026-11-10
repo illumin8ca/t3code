@@ -9,7 +9,7 @@ on:
 jobs:
   check:
     name: Check
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: boat-large
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -42,7 +42,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: boat-large
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -61,11 +61,22 @@ jobs:
       - name: Test
         run: vp run test
 
+  # Same-repo PRs and pushes run on the self-hosted Mac mini. Fork PRs must
+  # never reach that runner, so they run the identical steps on a GitHub-hosted
+  # macOS image instead (see mobile_native_static_analysis_fork below).
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
-    runs-on: blacksmith-12vcpu-macos-26
-    timeout-minutes: 10
-    steps:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macmini]
+    timeout-minutes: 15
+    env: &mobile_native_static_analysis_env
+      SWIFTLINT_VERSION: 0.65.1
+      SWIFTLINT_SHA256: c1e429b0599cf1b516f369a2d9ec04eaf0e436f3c12b637df8851fa52ff694d0
+      KTLINT_VERSION: 1.8.0
+      KTLINT_SHA256: a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75
+      DETEKT_VERSION: 1.23.8
+      DETEKT_SHA256: 2ce2ff952e150baf28a29cda70a363b0340b3e81a55f43e51ec5edffc3d066c1
+    steps: &mobile_native_static_analysis_steps
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -73,18 +84,60 @@ jobs:
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-          cache: true
+          # No dependency cache: the Mac mini has little free disk.
+          cache: false
           run-install: true
 
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # Pinned, checksum-verified release binaries into the job's temp dir.
+      # Neither runner needs Homebrew and nothing is installed on the host.
       - name: Install mobile native static analysis tools
-        run: brew bundle install --file apps/mobile/Brewfile
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/mobile-lint-tools"
+          mkdir -p "$tools_dir"
+          cd "$tools_dir"
+
+          curl -fsSL -o swiftlint.zip "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+          echo "${SWIFTLINT_SHA256}  swiftlint.zip" | shasum -a 256 -c -
+          unzip -q -o swiftlint.zip swiftlint
+          rm swiftlint.zip
+
+          curl -fsSL -o ktlint "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint"
+          echo "${KTLINT_SHA256}  ktlint" | shasum -a 256 -c -
+
+          curl -fsSL -o detekt-cli-all.jar "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}-all.jar"
+          echo "${DETEKT_SHA256}  detekt-cli-all.jar" | shasum -a 256 -c -
+          printf '#!/bin/sh\nexec java -jar "%s/detekt-cli-all.jar" "$@"\n' "$tools_dir" > detekt
+
+          chmod +x swiftlint ktlint detekt
+          echo "$tools_dir" >> "$GITHUB_PATH"
 
       - name: Lint mobile native sources
         run: vp run lint:mobile
 
+      - name: Clean up workspace
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/mobile-lint-tools"
+          git -C "$GITHUB_WORKSPACE" clean -ffdxq || true
+
+  mobile_native_static_analysis_fork:
+    name: Mobile Native Static Analysis (fork)
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: macos-26
+    timeout-minutes: 15
+    env: *mobile_native_static_analysis_env
+    steps: *mobile_native_static_analysis_steps
+
   release_smoke:
     name: Release Smoke
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: boat-large
     timeout-minutes: 10
     steps:
       - name: Checkout

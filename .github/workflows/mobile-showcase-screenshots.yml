@@ -31,8 +31,8 @@ env:
 jobs:
   ios:
     name: iPhone 6.9, iPhone 6.5, and iPad 13
-    if: inputs.platform == 'all' || inputs.platform == 'ios'
-    runs-on: blacksmith-12vcpu-macos-26
+    if: (inputs.platform == 'all' || inputs.platform == 'ios') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, macmini]
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -42,7 +42,8 @@ jobs:
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-          cache: true
+          # No dependency cache: the Mac mini has little free disk.
+          cache: false
           run-install: true
 
       - name: Expose pnpm
@@ -67,10 +68,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Clean up workspace
+        if: always()
+        run: |
+          rm -rf artifacts
+          git -C "$GITHUB_WORKSPACE" clean -ffdxq || true
+
   android:
     name: Android phone, 7-inch tablet, and 10-inch tablet
     if: inputs.platform == 'all' || inputs.platform == 'android'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: boat-large
     timeout-minutes: 60
     env:
       T3_SHOWCASE_ANDROID_ABI: x86_64
