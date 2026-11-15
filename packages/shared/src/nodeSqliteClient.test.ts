@@ -23,12 +23,28 @@ import * as SqliteClient from "./nodeSqliteClient.ts";
 const startedWorkers = vi.hoisted((): Array<NodeWorkerThreads.Worker> => []);
 const silentWorkers = vi.hoisted(() => ({ on: false, readyOnTerminate: false }));
 const failingWorkers = vi.hoisted(() => ({ message: undefined as string | undefined }));
+const rollbackFailure = vi.hoisted(() => ({ enabled: false }));
 const checkpointWorkers = vi.hoisted((): Array<NodeWorkerThreads.Worker> => []);
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeWorkerThreads>();
   class RecordedWorker extends actual.Worker {
     constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+      if (
+        rollbackFailure.enabled &&
+        args[1]?.workerData?.requireWal === false &&
+        args[1]?.workerData?.readOnly === false
+      ) {
+        args[0] = String(args[0]).replace(
+          "db = next;",
+          `db = next;
+          const prepare = db.prepare.bind(db);
+          db.prepare = (sql) => {
+            if (sql === "ROLLBACK") throw Object.assign(new Error("rollback failure"), { errcode: 10 });
+            return prepare(sql);
+          };`,
+        );
+      }
       super(
         ...((silentWorkers.on
           ? ["setInterval(() => {}, 1 << 30);", { eval: true }]
@@ -173,6 +189,114 @@ const makeTempDatabase = Effect.gen(function* () {
   });
   return { filename, other };
 });
+
+const sqliteErrorCode = (error: unknown) => {
+  if (!SqlError.isSqlError(error)) return undefined;
+  const cause = error.reason.cause;
+  return cause instanceof Error && "errcode" in cause ? cause.errcode : undefined;
+};
+
+it.effect.each([false, true])(
+  "rolls back a failed COMMIT before reuse (worker=%s)",
+  (writerWorker) =>
+    Effect.gen(function* () {
+      const { filename, other } = yield* makeTempDatabase;
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`PRAGMA foreign_keys = ON`;
+        yield* sql`CREATE TABLE parents(id INTEGER PRIMARY KEY)`;
+        yield* sql`CREATE TABLE children(id INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED)`;
+        const error = yield* sql
+          .withTransaction(sql`INSERT INTO children VALUES (1)`)
+          .pipe(Effect.flip);
+        assert.equal(sqliteErrorCode(error), 787);
+        other.exec("UPDATE counters SET value = 1 WHERE id = 1");
+        yield* sql.withTransaction(sql`INSERT INTO parents VALUES (1)`);
+        assert.deepEqual(yield* sql`SELECT * FROM children`, []);
+        yield* sql.withTransaction(sql`INSERT INTO children VALUES (1)`);
+        assert.deepEqual(yield* sql`SELECT id FROM children`.values, [[1]]);
+      }).pipe(Effect.provide(SqliteClient.layer({ filename, writerWorker })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([false, true])(
+  "closes a writer after failed COMMIT rollback (worker=%s)",
+  (writerWorker) =>
+    Effect.gen(function* () {
+      const { filename, other } = yield* makeTempDatabase;
+      let prepareSpy: ReturnType<typeof vi.spyOn> | undefined;
+      if (writerWorker) rollbackFailure.enabled = true;
+      else {
+        const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
+        prepareSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "prepare")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql) {
+            if (sql === "ROLLBACK")
+              throw Object.assign(new Error("rollback failure"), { errcode: 10 });
+            return prepare.call(this, sql);
+          });
+      }
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`PRAGMA foreign_keys = ON`;
+        yield* sql`CREATE TABLE parents(id INTEGER PRIMARY KEY)`;
+        yield* sql`CREATE TABLE children(id INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED)`;
+        const exit = yield* sql
+          .withTransaction(sql`INSERT INTO children VALUES (1)`)
+          .pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit)) {
+          const errors = exit.cause.reasons
+            .filter(Cause.isDieReason)
+            .map((reason) => sqliteErrorCode(reason.defect));
+          assert.deepEqual(errors, [787, 10]);
+        }
+        const workerCount = startedWorkers.length;
+        const read = yield* sql`SELECT * FROM children`.pipe(Effect.exit);
+        const write = yield* sql
+          .withTransaction(sql`INSERT INTO parents VALUES (1)`)
+          .pipe(Effect.exit);
+        const reserve = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* sql.reserve;
+            yield* connection.executeUnprepared("INSERT INTO parents VALUES (2)", [], undefined);
+          }),
+        ).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(read));
+        assert.isTrue(Exit.isFailure(write));
+        assert.isTrue(Exit.isFailure(reserve));
+        assert.equal(startedWorkers.length, workerCount);
+        other.exec("UPDATE counters SET value = 1 WHERE id = 1");
+        assert.deepEqual(other.prepare("SELECT * FROM children").all(), []);
+      }).pipe(
+        Effect.provide(SqliteClient.layer({ filename, writerWorker })),
+        Effect.ensuring(
+          Effect.sync(() => {
+            rollbackFailure.enabled = false;
+            prepareSpy?.mockRestore();
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([false, true])(
+  "does not roll back an unowned failed BEGIN (worker=%s)",
+  (writerWorker) =>
+    Effect.gen(function* () {
+      const { filename } = yield* makeTempDatabase;
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`BEGIN IMMEDIATE`;
+        yield* sql`UPDATE counters SET value = 7 WHERE id = 1`;
+        const exit = yield* sql.withTransaction(sql`SELECT 1`).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        assert.deepEqual(yield* sql`SELECT value FROM counters`.values, [[7]]);
+        yield* sql`ROLLBACK`;
+        assert.deepEqual(yield* sql`SELECT value FROM counters`.values, [[0]]);
+      }).pipe(Effect.provide(SqliteClient.layer({ filename, writerWorker })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.effect.each([false, true])("batches worker results without losing rows (reader=%s)", (reader) =>
   Effect.gen(function* () {
