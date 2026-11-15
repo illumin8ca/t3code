@@ -29,6 +29,8 @@ import * as Statement from "effect/sql/Statement";
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 
+const invalidators = new WeakMap<Connection, Effect.Effect<void>>();
+
 export interface SqliteClientConfig {
   readonly filename: string;
   readonly readonly?: boolean | undefined;
@@ -492,6 +494,13 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
         return Stream.die(new UnsupportedNodeSqliteOperationError());
       },
     });
+    invalidators.set(
+      connection,
+      Effect.promise(async () => {
+        stop(`${label} closed after failed transaction cleanup`);
+        await worker.terminate();
+      }),
+    );
     current = { worker, connection, started };
     return current;
   };
@@ -716,16 +725,17 @@ const make = Effect.fn("makeWithDatabase")(function* (
           reason: classifyError(cause, "Failed to open database", "open"),
         }),
     });
-    yield* Scope.addFinalizer(
-      scope,
-      Effect.try({
-        try: () => db.close(),
-        catch: (cause) =>
-          new SqlError({
-            reason: classifyError(cause, "Failed to close database", "close"),
-          }),
-      }).pipe(Effect.orDie),
-    );
+    let poisoned = false;
+    const close = Effect.try({
+      try: () => {
+        if (db.isOpen) db.close();
+      },
+      catch: (cause) =>
+        new SqlError({
+          reason: classifyError(cause, "Failed to close database", "close"),
+        }),
+    }).pipe(Effect.orDie);
+    yield* Scope.addFinalizer(scope, close);
     const statementReaderCache = new WeakMap<NodeSqlite.StatementSync, boolean>();
     const hasRows = (statement: NodeSqlite.StatementSync): boolean => {
       const cached = statementReaderCache.get(statement);
@@ -764,6 +774,8 @@ const make = Effect.fn("makeWithDatabase")(function* (
         let arrays = false;
         let result: Exit.Exit<ReadonlyArray<unknown>, SqlError>;
         try {
+          if (poisoned)
+            throw new Error("Database connection closed after failed transaction cleanup");
           statement.setReadBigInts(Boolean(Context.get(fiber.context, Client.SafeIntegers)));
           if (hasRows(statement)) {
             arrays = mode === "values";
@@ -809,7 +821,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
         runStatement(statement, params, "values"),
       );
 
-    return identity<Connection>({
+    const connection = identity<Connection>({
       execute(sql, params, rowTransform) {
         return rowTransform ? Effect.map(run(sql, params), rowTransform) : run(sql, params);
       },
@@ -834,6 +846,13 @@ const make = Effect.fn("makeWithDatabase")(function* (
         return Stream.die(new UnsupportedNodeSqliteOperationError());
       },
     });
+    invalidators.set(
+      connection,
+      Effect.sync(() => {
+        poisoned = true;
+      }).pipe(Effect.andThen(close)),
+    );
+    return connection;
   });
 
   const semaphore = yield* Semaphore.make(1);
@@ -1006,6 +1025,12 @@ const make = Effect.fn("makeWithDatabase")(function* (
     borrower,
     compiler,
     transactionAcquirer,
+    // Effect invokes this only after this client's COMMIT, never after a failed BEGIN.
+    onCommitFailure: (connection) =>
+      connection.executeUnprepared("ROLLBACK", [], undefined).pipe(
+        Effect.asVoid,
+        Effect.tapCause(() => invalidators.get(connection) ?? Effect.void),
+      ),
     // BEGIN IMMEDIATE avoids read-then-write SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot resolve.
     beginTransaction: options.readonly === true ? "BEGIN" : "BEGIN IMMEDIATE",
     spanAttributes: [
